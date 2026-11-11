@@ -2,7 +2,7 @@
 # Установка и обновление «Мебель Сегмент» на чистый сервер Ubuntu 22.04/24.04.
 # Повторный запуск обновляет приложение и не трогает данные и пароль.
 set -euo pipefail
-REPO="${REPO:-https://github.com/REPLACE_OWNER/mebel-segment.git}"
+REPO="${REPO:-https://github.com/ahmedpaihaev-blip/mebel-segment.git}"
 DOMAIN="${DOMAIN:-mebel-segment.ru}"
 APP=/opt/mebel-segment
 DATA=/var/lib/mebel-segment

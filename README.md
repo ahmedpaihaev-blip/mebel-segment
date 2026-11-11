@@ -8,7 +8,7 @@
 ## Установка и обновление на сервере (Ubuntu 22.04/24.04, от root)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/REPLACE_OWNER/mebel-segment/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ahmedpaihaev-blip/mebel-segment/main/install.sh | bash
 ```
 
 Повторный запуск той же команды обновляет приложение. Данные лежат в `/var/lib/mebel-segment/shop.db`, ежедневные копии — в `/var/backups/mebel-segment/`.
