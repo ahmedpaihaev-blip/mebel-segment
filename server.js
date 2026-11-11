@@ -32,35 +32,57 @@ CREATE TABLE IF NOT EXISTS receipts (id INTEGER PRIMARY KEY, date TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS receipt_items (receipt_id INTEGER NOT NULL REFERENCES receipts(id), product_id INTEGER NOT NULL REFERENCES products(id), qty INTEGER NOT NULL, cost REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `);
-if (!db.prepare('PRAGMA table_info(products)').all().some(c => c.name === 'photo')) db.exec('ALTER TABLE products ADD COLUMN photo TEXT');
+for (const [col, type] of [['photo', 'TEXT'], ['box', 'INTEGER'], ['descr', 'TEXT']]) {
+  if (!db.prepare('PRAGMA table_info(products)').all().some(c => c.name === col)) db.exec(`ALTER TABLE products ADD COLUMN ${col} ${type}`);
+}
 const UPLOADS = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOADS, { recursive: true });
 
-// Первичное наполнение: банки владельца и примерный каталог (меняется в кабинете).
 if (!db.prepare('SELECT COUNT(*) c FROM banks').get().c) {
   const ins = db.prepare('INSERT INTO banks (name, acc, balance) VALUES (?, ?, 0)');
   for (const n of ['Альфа-Банк', 'Сбербанк', 'Россельхозбанк']) ins.run(n, '');
-}
-if (!db.prepare('SELECT COUNT(*) c FROM products').get().c) {
-  const ins = db.prepare('INSERT INTO products (sku, name, cat, unit, price, stock) VALUES (?, ?, ?, ?, ?, ?)');
-  [
-    ['HNG-110', 'Петля накладная 110° с доводчиком', 'Петли', 'шт', 145, 0],
-    ['HNG-165', 'Петля вкладная 165° для угловых шкафов', 'Петли', 'шт', 210, 0],
-    ['SLD-350', 'Направляющие шариковые 350 мм', 'Направляющие', 'компл.', 390, 0],
-    ['SLD-500T', 'Направляющие скрытые 500 мм, push-to-open', 'Направляющие', 'компл.', 1850, 0],
-    ['HDL-128B', 'Ручка-скоба 128 мм, латунь', 'Ручки', 'шт', 260, 0],
-    ['HDL-160G', 'Ручка-рейлинг 160 мм, графит', 'Ручки', 'шт', 190, 0],
-    ['LFT-100N', 'Подъёмник газовый 100 N', 'Подъёмники', 'шт', 320, 0],
-    ['LEG-100', 'Опора регулируемая 100 мм', 'Опоры', 'шт', 95, 0],
-  ].forEach(r => ins.run(...r));
 }
 const DEFAULT_OWNER = { name: '', inn: '', ogrnip: '', addr: '', bank: '', acc: '', bik: '', ks: '', phone: '', email: '' };
 const getOwner = () => {
   const r = db.prepare("SELECT value FROM settings WHERE key = 'owner'").get();
   return { ...DEFAULT_OWNER, ...(r ? JSON.parse(r.value) : {}) };
 };
+const CATS = ['Петли', 'Направляющие', 'Ручки', 'Подъёмники', 'Опоры', 'Упаковка', 'Прочее'];
 
-const CATS = ['Петли', 'Направляющие', 'Ручки', 'Подъёмники', 'Опоры', 'Прочее'];
+// Каталог из КП (catalog/catalog.json): загружается один раз на каждую новую версию файла.
+// Товары, уже изменённые владельцем, не перезаписываются — добавляются только новые артикулы.
+(function importCatalog() {
+  const dir = path.join(__dirname, 'catalog');
+  let cat; try { cat = JSON.parse(fs.readFileSync(path.join(dir, 'catalog.json'), 'utf8')); } catch { return; }
+  const done = Number(db.prepare("SELECT value FROM settings WHERE key = 'catalog_version'").get()?.value || 0);
+  if (done >= cat.version) return;
+  db.exec('BEGIN');
+  try {
+    const hide = db.prepare('UPDATE products SET active = 0 WHERE sku = ?');
+    for (const sku of cat.replaceSkus || []) hide.run(sku);
+    const exists = db.prepare('SELECT id FROM products WHERE sku = ?');
+    const ins = db.prepare('INSERT INTO products (sku, name, cat, unit, price, stock, box, descr) VALUES (?, ?, ?, ?, ?, 0, ?, ?)');
+    const setPhoto = db.prepare('UPDATE products SET photo = ? WHERE id = ?');
+    for (const p of cat.products) {
+      if (exists.get(p.sku)) continue;
+      const id = Number(ins.run(p.sku, p.name, CATS.includes(p.cat) ? p.cat : 'Прочее', p.unit || 'шт', p.price, p.box || null, p.descr || null).lastInsertRowid);
+      if (p.photo) {
+        const name = `${id}-${crypto.randomBytes(6).toString('hex')}.jpg`;
+        fs.copyFileSync(path.join(dir, 'photos', path.basename(p.photo)), path.join(UPLOADS, name));
+        setPhoto.run(name, id);
+      }
+    }
+    if (cat.owner) {
+      const o = getOwner();
+      for (const k of Object.keys(cat.owner)) if (!o[k]) o[k] = cat.owner[k];
+      db.prepare("INSERT INTO settings (key, value) VALUES ('owner', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(o));
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES ('catalog_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(cat.version));
+    db.exec('COMMIT');
+    console.log(`Каталог v${cat.version} загружен.`);
+  } catch (e) { db.exec('ROLLBACK'); console.error('Не удалось загрузить каталог:', e); }
+})();
+
 const now = () => new Date().toISOString();
 const r2 = n => Math.round(n * 100) / 100;
 
@@ -106,7 +128,7 @@ function adminState() {
   return {
     owner: getOwner(),
     cats: CATS,
-    products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY cat, name').all(),
+    products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all(),
     banks: db.prepare('SELECT * FROM banks ORDER BY id').all(),
     txns: db.prepare('SELECT * FROM txns ORDER BY id DESC LIMIT 300').all(),
     invoices: invoiceRows(),
@@ -139,7 +161,7 @@ const routes = {
   'GET /api/catalog': () => ({
     cats: CATS,
     owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
-    products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo FROM products WHERE active = 1 ORDER BY cat, name').all(),
+    products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo, box, descr FROM products WHERE active = 1 ORDER BY id').all(),
   }),
   'POST /api/orders': (b) => tx(() => {
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
@@ -211,13 +233,14 @@ const routes = {
   }),
   'POST /api/admin/products': (b) => {
     const sku = str(b.sku, 40), name = str(b.name, 160), cat = CATS.includes(b.cat) ? b.cat : 'Прочее', unit = str(b.unit, 12) || 'шт', price = money(b.price);
+    const box = posInt(b.box) || null, descr = str(b.descr, 300) || null;
     if (!sku || !name || !(price > 0)) throw new UserError('Заполните артикул, название и цену.');
     if (b.id) {
-      const r = db.prepare('UPDATE products SET sku = ?, name = ?, cat = ?, unit = ?, price = ? WHERE id = ? AND active = 1').run(sku, name, cat, unit, price, posInt(b.id));
+      const r = db.prepare('UPDATE products SET sku = ?, name = ?, cat = ?, unit = ?, price = ?, box = ?, descr = ? WHERE id = ? AND active = 1').run(sku, name, cat, unit, price, box, descr, posInt(b.id));
       if (!r.changes) throw new UserError('Товар не найден.', 404);
       return { id: posInt(b.id) };
     }
-    return { id: Number(db.prepare('INSERT INTO products (sku, name, cat, unit, price) VALUES (?, ?, ?, ?, ?)').run(sku, name, cat, unit, price).lastInsertRowid) };
+    return { id: Number(db.prepare('INSERT INTO products (sku, name, cat, unit, price, box, descr) VALUES (?, ?, ?, ?, ?, ?, ?)').run(sku, name, cat, unit, price, box, descr).lastInsertRowid) };
   },
   'POST /api/admin/products/photo': (b) => {
     const p = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(posInt(b.id));
