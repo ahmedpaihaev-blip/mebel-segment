@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Мебель Сегмент — мебельная фурнитура</title>
+<meta name="description" content="Мебельная фурнитура: петли, направляющие, ручки, подъёмники, опоры. Продажа со склада, счёт для юрлиц и ИП.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky bar with two modes (shop / owner cabinet); shop = filter row + product grid + cart drawer; cabinet = tab strip + working tables. */
+:root{
+  --bg:#EDF0EE; --surface:#FFFFFF; --ink:#17201E; --muted:#5D6A66; --line:#D3D9D6; --chip:#E2E7E5;
+  --steel:#2B4A53; --on-steel:#FFFFFF; --brass:#9C7224;
+  --ok:#2C7A4D; --warn:#A86300; --bad:#B0261E;
+  --f-display:"Unbounded","Golos Text",system-ui,sans-serif;
+  --f-body:"Golos Text",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F1514; --surface:#172020; --ink:#E5ECE9; --muted:#93A29D; --line:#2A3634; --chip:#21302D;
+  --steel:#86B6C2; --on-steel:#0F1514; --brass:#D9AE5E; --ok:#5DC58B; --warn:#E6A43C; --bad:#F2877F; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F1514; --surface:#172020; --ink:#E5ECE9; --muted:#93A29D; --line:#2A3634; --chip:#21302D;
+  --steel:#86B6C2; --on-steel:#0F1514; --brass:#D9AE5E; --ok:#5DC58B; --warn:#E6A43C; --bad:#F2877F; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--surface)}
+.wrap{max-width:1180px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{text-wrap:balance;margin:0}
+h1{font-family:var(--f-display);font-weight:600;font-size:clamp(22px,3.4vw,34px);line-height:1.15;letter-spacing:-.01em}
+h2{font-family:var(--f-display);font-weight:500;font-size:19px}
+h3{font-size:15px;font-weight:500;line-height:1.35}
+.mono{font-family:var(--f-mono);font-size:12px;letter-spacing:.02em}
+.muted{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--steel);outline-offset:2px}
+
+/* top bar */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
+.bar .wrap{display:flex;align-items:center;gap:16px;padding-block:10px;flex-wrap:wrap}
+.brand{display:flex;flex-direction:column;line-height:1.1;margin-right:auto}
+.brand b{font-family:var(--f-display);font-weight:600;font-size:17px;letter-spacing:.06em}
+.brand span{font-size:12px;color:var(--muted)}
+.modes{display:flex;background:var(--chip);border-radius:8px;padding:3px}
+.modes button{border:0;background:none;padding:6px 12px;border-radius:6px;font-weight:500;color:var(--muted)}
+.modes button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.btn{border:1px solid var(--line);background:var(--surface);padding:8px 14px;border-radius:8px;font-weight:500}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--steel);border-color:var(--steel);color:var(--on-steel)}
+.btn.small{padding:4px 10px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.cart-btn .count{display:inline-block;min-width:20px;padding:0 6px;margin-left:6px;border-radius:10px;background:var(--brass);color:var(--surface);font-size:12px;text-align:center}
+
+/* shop */
+.hero{padding-block:28px 18px;display:grid;gap:8px;max-width:720px}
+.hero p{margin:0;color:var(--muted);max-width:60ch}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-bottom:18px}
+.chip{border:1px solid var(--line);background:transparent;padding:5px 12px;border-radius:999px;font-size:14px}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.search{margin-left:auto;min-width:0;flex:0 1 240px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;padding-bottom:48px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px}
+.pic{background:var(--chip);border-radius:6px;aspect-ratio:3/2;max-width:100%;display:grid;place-items:center;color:var(--steel)}
+.pic svg{width:70%;height:auto}
+.pic svg *{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round}
+.card h3{min-height:2.7em}
+.price{font-family:var(--f-display);font-weight:500;font-size:18px;color:var(--brass)}
+.stock{font-size:13px;display:flex;align-items:center;gap:6px}
+.stock::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.s-ok{color:var(--ok)}.s-low{color:var(--warn)}.s-out{color:var(--bad)}
+.card .btn{margin-top:auto}
+
+/* drawer + modal */
+.veil{position:fixed;inset:0;background:rgba(10,16,15,.45);z-index:20}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,100%);background:var(--surface);z-index:21;display:flex;flex-direction:column;
+  padding:calc(16px + env(safe-area-inset-top,0px)) max(18px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) 18px;overflow-y:auto;gap:14px}
+.drawer-head{display:flex;justify-content:space-between;align-items:center}
+.x{border:0;background:none;font-size:22px;line-height:1;padding:4px 8px;color:var(--muted)}
+.cline{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding-block:10px;border-bottom:1px solid var(--line)}
+.qty{display:flex;align-items:center;gap:6px}
+.qty button{width:28px;height:28px;border:1px solid var(--line);background:var(--surface);border-radius:6px}
+.total{display:flex;justify-content:space-between;font-weight:600;font-size:17px}
+form.stack{display:grid;gap:10px}
+label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+input[type=text],input[type=tel],input[type=number],input[type=password],select{width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font-size:15px}
+.radio{display:flex;gap:8px;align-items:flex-start;color:var(--ink);font-size:14px;grid-template-columns:none}
+.radio input{margin-top:4px}
+.err{color:var(--bad);font-size:13px;margin:0}
+.done{background:var(--chip);border-radius:10px;padding:16px;display:grid;gap:6px}
+.modal{position:fixed;z-index:21;left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100% - 24px));max-height:calc(100% - 40px);overflow:auto;background:var(--surface);border-radius:12px;padding:20px;display:grid;gap:14px}
+
+/* cabinet */
+.gate{max-width:360px;margin:60px auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px;display:grid;gap:12px}
+.tabs{display:flex;gap:4px;overflow-x:auto;padding-block:16px 4px;border-bottom:1px solid var(--line)}
+.tabs button{border:0;background:none;padding:8px 12px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--brass)}
+.panel{padding-block:20px 56px;display:grid;gap:18px}
+.panel-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;gap:2px}
+.tile b{font-family:var(--f-display);font-weight:500;font-size:22px}
+.tile.lead{background:var(--steel);border-color:var(--steel);color:var(--on-steel)}
+.tile.lead .muted{color:inherit;opacity:.8}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;gap:8px;align-content:start;min-width:0}
+.list-row{display:flex;justify-content:space-between;gap:10px;padding-block:6px;border-top:1px solid var(--line);font-size:14px}
+.list-row:first-of-type{border-top:0}
+.tbl-wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap;border:1px solid currentColor}
+.p-ok{color:var(--ok)}.p-warn{color:var(--warn)}.p-bad{color:var(--bad)}.p-mute{color:var(--muted)}
+.plus{color:var(--ok)}.minus{color:var(--bad)}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.formbox{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:12px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.line{display:grid;grid-template-columns:minmax(0,1fr) 90px 110px 36px;gap:8px;align-items:center}
+.line.no-cost{grid-template-columns:minmax(0,1fr) 90px 36px}
+.note{font-size:13px;color:var(--muted);background:var(--chip);border-radius:8px;padding:10px 12px;margin:0}
+.demo{font-size:12px;color:var(--warn);font-weight:500}
+/* invoice document */
+.doc{border:1px solid var(--line);border-radius:8px;padding:18px;display:grid;gap:10px;font-size:13px}
+.doc h2{font-family:var(--f-body);font-weight:600;font-size:17px}
+.doc table{font-size:13px}
+.req{display:grid;grid-template-columns:120px 1fr;gap:2px 10px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;z-index:30;font-size:14px;max-width:calc(100% - 32px)}
+@media (max-width:560px){.line{grid-template-columns:1fr 70px 36px}.line .cost{grid-column:1/3}.search{flex-basis:100%;margin-left:0}}
+@media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s}.card:hover{border-color:var(--muted)}}
+</style>
+<style>
+:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0}
+img{max-width:100%}
+[hidden]{display:none!important}
+.brand{flex-direction:row;align-items:center;gap:10px;text-decoration:none;color:inherit}
+.brand img{height:36px;width:auto}
+.brand .txt{display:flex;flex-direction:column;line-height:1.1}
+.foot{border-top:1px solid var(--line);padding-block:20px;color:var(--muted);font-size:14px}
+.foot .wrap{display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+.loading{padding-block:60px;text-align:center;color:var(--muted)}
+.inline-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 140px auto;gap:8px;align-items:end}
+@media (max-width:640px){.inline-form{grid-template-columns:1fr 1fr}}
+textarea{width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;resize:vertical}
+.btn.danger{color:var(--bad)}
+</style>
+</head>
+<body>
+<div class="bar"><div class="wrap">
+  <a class="brand" href="#">
+    <img id="logo" src="/logo.png" alt="" hidden onload="this.hidden=false">
+    <span class="txt"><b>МЕБЕЛЬ СЕГМЕНТ</b><span>мебельная фурнитура</span></span>
+  </a>
+  <div class="modes" id="modes" role="group" aria-label="Раздел" hidden>
+    <button id="m-shop" data-act="mode" data-v="">Магазин</button>
+    <button id="m-admin" data-act="mode" data-v="admin">Кабинет</button>
+  </div>
+  <button id="cartBtn" class="btn cart-btn" data-act="cart">Корзина<span class="count num" id="cartCount">0</span></button>
+</div></div>
+<main id="app"><div class="loading">Загрузка…</div></main>
+<footer class="foot" id="foot"></footer>
+<div id="layer"></div>
+
+<script>
+'use strict';
+const ICONS={
+ 'Петли':'<svg viewBox="0 0 120 80"><circle cx="38" cy="40" r="18"/><circle cx="38" cy="40" r="9"/><rect x="54" y="33" width="52" height="14" rx="4"/><circle cx="94" cy="40" r="3"/></svg>',
+ 'Направляющие':'<svg viewBox="0 0 120 80"><rect x="10" y="24" width="100" height="12" rx="2"/><rect x="24" y="44" width="86" height="12" rx="2"/><circle cx="40" cy="40" r="3"/><circle cx="60" cy="40" r="3"/><circle cx="80" cy="40" r="3"/></svg>',
+ 'Ручки':'<svg viewBox="0 0 120 80"><path d="M22 56V40Q22 26 36 26H84Q98 26 98 40V56"/><rect x="14" y="54" width="16" height="7" rx="2"/><rect x="90" y="54" width="16" height="7" rx="2"/></svg>',
+ 'Подъёмники':'<svg viewBox="0 0 120 80"><rect x="12" y="32" width="58" height="16" rx="8"/><rect x="70" y="37" width="38" height="6" rx="3"/><circle cx="12" cy="40" r="4"/><circle cx="108" cy="40" r="4"/></svg>',
+ 'Опоры':'<svg viewBox="0 0 120 80"><rect x="44" y="12" width="32" height="10" rx="2"/><rect x="54" y="22" width="12" height="34"/><path d="M34 66Q60 50 86 66Z"/></svg>',
+ 'Прочее':'<svg viewBox="0 0 120 80"><rect x="30" y="20" width="60" height="40" rx="4"/><path d="M30 34H90"/></svg>'
+};
+const LOW=10;
+let C=null, A=null, cart={}, filt={cat:'',q:''}, tab='summary', cartDone=null;
+try{cart=JSON.parse(localStorage.getItem('cart'))||{}}catch(e){}
+const saveCart=()=>{try{localStorage.setItem('cart',JSON.stringify(cart))}catch(e){}};
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rub=n=>Number(n).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' ₽';
+const dt=iso=>new Date(iso).toLocaleDateString('ru-RU');
+function toast(t){const el=document.createElement('div');el.className='toast';el.setAttribute('role','status');el.textContent=t;document.body.appendChild(el);setTimeout(()=>el.remove(),3000)}
+async function api(url,body){
+  const r=await fetch(url,body===undefined?{credentials:'same-origin'}:{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  let data={};try{data=await r.json()}catch(e){}
+  if(!r.ok){const e=new Error(data.error||'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.');e.status=r.status;throw e}
+  return data;
+}
+const isAdminRoute=()=>location.hash==='#admin';
+
+/* ---------- общий рендер ---------- */
+async function render(){
+  const adm=isAdminRoute();
+  $('#modes').hidden=!A; // переключатель виден только владельцу после входа
+  $('#m-shop').setAttribute('aria-pressed',!adm);$('#m-admin').setAttribute('aria-pressed',adm);
+  $('#cartBtn').hidden=adm;
+  updCount();
+  if(adm){
+    if(!A){try{A=await api('/api/admin/state');$('#modes').hidden=false}catch(e){if(e.status!==401){$('#app').innerHTML=`<div class="wrap loading">${esc(e.message)}</div>`;return}}}
+    $('#app').innerHTML=A?adminView():loginView();
+  }else{
+    if(!C){try{C=await api('/api/catalog')}catch(e){$('#app').innerHTML=`<div class="wrap loading">${esc(e.message)}</div>`;return}}
+    for(const id in cart)if(!C.products.find(p=>p.id==id))delete cart[id];
+    $('#app').innerHTML=shopView();renderGrid();updCount();
+  }
+  renderFoot();
+}
+function renderFoot(){
+  const o=(A&&A.owner)||(C&&C.owner)||{};
+  $('#foot').innerHTML=`<div class="wrap"><span>© ${new Date().getFullYear()} Мебель Сегмент · mebel-segment.ru</span><span>${o.phone?'Телефон: <span class="num">'+esc(o.phone)+'</span>':''}${o.phone&&o.email?' · ':''}${o.email?esc(o.email):''}</span></div>`;
+}
+window.addEventListener('hashchange',()=>{closeLayer();render()});
+function updCount(){$('#cartCount').textContent=Object.values(cart).reduce((a,b)=>a+b,0)}
+
+/* ---------- магазин ---------- */
+const P=id=>(C?C.products:A.products).find(p=>p.id==id);
+function stockBadge(p){
+  if(p.stock<=0)return'<span class="stock s-out">Под заказ</span>';
+  if(p.stock<LOW)return`<span class="stock s-low">Осталось ${p.stock} ${esc(p.unit)}</span>`;
+  return`<span class="stock s-ok">В наличии ${p.stock} ${esc(p.unit)}</span>`;
+}
+function shopView(){
+  return`<div class="wrap">
+  <section class="hero"><h1>Мебельная фурнитура для мастерских и частных заказов</h1>
+  <p>Петли, направляющие, ручки, подъёмники и опоры со склада. Оформите заказ, и мы пришлём счёт на оплату. Работаем с юрлицами, ИП и частными покупателями.</p></section>
+  <div class="filters">
+    <button class="chip" data-act="cat" data-v="" aria-pressed="${!filt.cat}">Все</button>
+    ${C.cats.filter(c=>C.products.some(p=>p.cat===c)).map(c=>`<button class="chip" data-act="cat" data-v="${esc(c)}" aria-pressed="${filt.cat===c}">${esc(c)}</button>`).join('')}
+    <input id="q" class="search" type="text" placeholder="Поиск по названию или артикулу" value="${esc(filt.q)}" aria-label="Поиск">
+  </div>
+  <div class="grid" id="grid"></div></div>`;
+}
+function renderGrid(){
+  const q=filt.q.trim().toLowerCase();
+  const list=C.products.filter(p=>(!filt.cat||p.cat===filt.cat)&&(!q||(p.name+' '+p.sku).toLowerCase().includes(q)));
+  $('#grid').innerHTML=list.length?list.map(p=>`<article class="card">
+    <div class="pic">${ICONS[p.cat]||ICONS['Прочее']}</div>
+    <div class="mono muted">${esc(p.sku)}</div>
+    <h3>${esc(p.name)}</h3>
+    <div><span class="price num">${rub(p.price)}</span> <span class="muted">/ ${esc(p.unit)}</span></div>
+    ${stockBadge(p)}
+    <button class="btn primary" data-act="add" data-id="${p.id}" ${p.stock<=0?'disabled':''}>${cart[p.id]?'В корзине: '+cart[p.id]:'В корзину'}</button>
+  </article>`).join(''):'<p class="muted">Ничего не нашлось. Попробуйте другой запрос.</p>';
+}
+function cartView(){
+  if(cartDone)return`<div class="drawer-head"><h2>Заказ принят</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+   <div class="done"><b>Заказ №${cartDone.order} на ${rub(cartDone.sum)}</b><span>Мы проверим наличие и пришлём счёт №${cartDone.invoice} на оплату. Обычно это занимает до часа в рабочее время.</span></div>`;
+  const ids=Object.keys(cart);
+  const sum=ids.reduce((s,id)=>s+P(id).price*cart[id],0);
+  return`<div class="drawer-head"><h2>Корзина</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+  ${ids.length?ids.map(id=>{const p=P(id);return`<div class="cline"><div><div class="mono muted">${esc(p.sku)}</div>${esc(p.name)}</div>
+    <div class="num">${rub(p.price*cart[id])}</div>
+    <div class="qty"><button data-act="dec" data-id="${id}" aria-label="Меньше">−</button><span class="num">${cart[id]} ${esc(p.unit)}</span><button data-act="inc" data-id="${id}" aria-label="Больше">+</button></div>
+    <div class="muted num" style="font-size:13px">${rub(p.price)} / ${esc(p.unit)}</div></div>`}).join('')+
+  `<div class="total"><span>Итого</span><span class="num">${rub(sum)}</span></div>
+  <form class="stack" id="checkout">
+    <label>Имя или название компании<input id="c-name" type="text" required autocomplete="name"></label>
+    <label>Телефон<input id="c-phone" type="tel" required placeholder="+7" autocomplete="tel"></label>
+    <label>ИНН (для юрлиц и ИП)<input id="c-inn" type="text" inputmode="numeric"></label>
+    <label>Комментарий<textarea id="c-comment" rows="2" placeholder="Доставка, удобное время для звонка"></textarea></label>
+    <p class="err" id="c-err" hidden></p>
+    <button class="btn primary" type="submit">Оформить заказ</button>
+    <p class="muted" style="font-size:13px;margin:0">Оплата по счёту. Нажимая кнопку, вы соглашаетесь на обработку контактных данных для связи по заказу.</p>
+  </form>`:'<p class="muted">Корзина пуста. Добавьте товары из каталога.</p>'}`;
+}
+function drawCart(){$('#layer').innerHTML=`<div class="veil" data-act="close"></div><aside class="drawer" aria-label="Корзина">${cartView()}</aside>`}
+function closeLayer(){$('#layer').innerHTML='';cartDone=null}
+async function checkout(f){
+  const err=f.querySelector('#c-err'),btn=f.querySelector('button[type=submit]');
+  btn.disabled=true;err.hidden=true;
+  try{
+    const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn').value,comment:$('#c-comment').value,
+      items:Object.keys(cart).map(id=>({pid:+id,qty:cart[id]}))});
+    cartDone=r;cart={};saveCart();C=null;A=null;await render();drawCart();
+  }catch(e){err.hidden=false;err.textContent=e.message;btn.disabled=false}
+}
+
+/* ---------- кабинет ---------- */
+const B=id=>A.banks.find(b=>b.id==id);
+function loginView(){
+  return`<div class="wrap"><form class="gate" id="gate">
+    <h2>Вход в кабинет</h2><p class="muted" style="margin:0">Раздел только для владельца.</p>
+    <label>Пароль<input id="pin" type="password" autocomplete="current-password" required></label>
+    <p class="err" id="pin-err" hidden></p>
+    <button class="btn primary" type="submit">Войти</button></form></div>`;
+}
+const TABS=[['summary','Сводка'],['invoices','Счета'],['orders','Заказы'],['stock','Склад'],['receipts','Приходы'],['banks','Банки'],['settings','Настройки']];
+function adminView(){
+  return`<div class="wrap"><div class="tabs" role="tablist">${TABS.map(([k,t])=>`<button role="tab" data-act="tab" data-v="${k}" aria-selected="${tab===k}">${t}</button>`).join('')}
+   <button data-act="logout" style="margin-left:auto">Выйти</button></div>
+  <section class="panel">${VIEWS[tab]()}</section></div>`;
+}
+async function reload(msg){A=await api('/api/admin/state');$('#app').innerHTML=adminView();renderFoot();if(msg)toast(msg)}
+async function act(url,body,msg){try{await api(url,body);await reload(msg)}catch(e){if(e.status===401){A=null;render()}toast(e.message)}}
+
+function invPill(i){
+  if(i.status==='cancelled')return'<span class="pill p-mute">Отменён</span>';
+  return(i.status==='paid'?'<span class="pill p-ok">Оплачен</span>':'<span class="pill p-warn">Ждёт оплаты</span>')+(i.shipped?' <span class="pill p-mute">Отгружен</span>':'');
+}
+function prodOptions(){return A.products.map(p=>`<option value="${p.id}">${esc(p.sku)} · ${esc(p.name)} (ост. ${p.stock})</option>`).join('')}
+function lineRow(withCost){return`<div class="line${withCost?'':' no-cost'}"><select aria-label="Товар" class="l-pid">${prodOptions()}</select>
+  <input class="l-qty" type="number" min="1" value="1" aria-label="Количество">
+  ${withCost?'<input class="l-cost cost" type="number" min="0" step="0.01" placeholder="Цена закупки" aria-label="Цена закупки">':''}
+  <button type="button" class="btn small" data-act="rmrow" aria-label="Убрать строку">×</button></div>`}
+function readLines(boxId,withCost){
+  return[...document.querySelectorAll('#'+boxId+' .line')].map(l=>({pid:+l.querySelector('.l-pid').value,qty:+l.querySelector('.l-qty').value,cost:withCost?l.querySelector('.l-cost').value:undefined}));
+}
+function showErr(id,t){const e=$('#'+id);e.hidden=false;e.textContent=t}
+
+const VIEWS={
+summary(){
+  const total=A.banks.reduce((s,b)=>s+b.balance,0);
+  const unpaid=A.invoices.filter(i=>i.status==='issued');
+  const low=A.products.filter(p=>p.stock<LOW);
+  const fresh=A.orders.filter(o=>o.status==='new');
+  const stockVal=A.products.reduce((s,p)=>s+p.stock*p.price,0);
+  return`<div class="panel-head"><h2>Сводка на ${new Date().toLocaleDateString('ru-RU')}</h2></div>
+  ${!A.owner.name?'<p class="note">Заполните реквизиты ИП во вкладке «Настройки», чтобы они появились в счетах.</p>':''}
+  <div class="tiles"><div class="tile lead"><span class="muted">На всех счетах</span><b class="num">${rub(total)}</b></div>
+   ${A.banks.map(b=>`<div class="tile"><span class="muted">${esc(b.name)} <span class="mono">${esc(b.acc)}</span></span><b class="num">${rub(b.balance)}</b></div>`).join('')}</div>
+  <div class="cols">
+   <div class="box"><h3>Ждут оплаты · ${unpaid.length} на ${rub(unpaid.reduce((s,i)=>s+i.sum,0))}</h3>
+    ${unpaid.map(i=>`<div class="list-row"><span>№${i.id} · ${esc(i.client)}</span><span class="num">${rub(i.sum)}</span></div>`).join('')||'<span class="muted">Неоплаченных счетов нет.</span>'}</div>
+   <div class="box"><h3>Заканчивается на складе</h3>
+    ${low.map(p=>`<div class="list-row"><span>${esc(p.name)}</span><span class="${p.stock>0?'s-low':'s-out'} num">${p.stock} ${esc(p.unit)}</span></div>`).join('')||'<span class="muted">Всего достаточно.</span>'}</div>
+   <div class="box"><h3>Новые заказы · ${fresh.length}</h3>
+    ${fresh.map(o=>`<div class="list-row"><span>№${o.id} · ${esc(o.client)}</span><span class="muted num">${dt(o.date)}</span></div>`).join('')||'<span class="muted">Новых заказов нет.</span>'}
+    <div class="list-row"><span class="muted">Товар на складе по ценам продажи</span><span class="num">${rub(stockVal)}</span></div></div>
+  </div>`;
+},
+invoices(){
+  return`<div class="panel-head"><h2>Счета</h2><button class="btn primary" data-act="toggle" data-v="invForm">Новый счёт</button></div>
+  <form class="formbox" id="invForm" hidden>
+    <h3>Новый счёт на оплату</h3>
+    <div class="fgrid"><label>Покупатель<input id="i-client" type="text" placeholder="ООО «Мебель Мастер»"></label><label>ИНН покупателя<input id="i-inn" type="text" inputmode="numeric"></label></div>
+    <div class="lines" id="i-lines">${lineRow(false)}</div>
+    <div class="acts"><button type="button" class="btn small" data-act="addrow" data-v="i-lines" data-cost="0">Добавить строку</button></div>
+    <p class="err" id="i-err" hidden></p>
+    <div class="acts"><button class="btn primary" type="submit">Выставить счёт</button></div>
+  </form>
+  ${A.invoices.length?`<div class="tbl-wrap"><table><thead><tr><th>№</th><th>Дата</th><th>Покупатель</th><th class="r">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>
+  ${A.invoices.map(i=>`<tr><td class="num">${i.id}</td><td class="num">${dt(i.date)}</td><td>${esc(i.client)}</td><td class="r num">${rub(i.sum)}</td><td>${invPill(i)}</td>
+   <td><div class="acts"><button class="btn small" data-act="viewInv" data-id="${i.id}">Открыть</button>
+   ${i.status==='issued'?`<button class="btn small" data-act="payInv" data-id="${i.id}">Оплачен</button>`:''}
+   ${i.status!=='cancelled'&&!i.shipped?`<button class="btn small" data-act="ship" data-id="${i.id}">Отгрузить</button>`:''}
+   ${i.status==='issued'&&!i.shipped?`<button class="btn small danger" data-act="cancelInv" data-id="${i.id}">Отменить</button>`:''}</div></td></tr>`).join('')}
+  </tbody></table></div>`:'<p class="muted">Счетов пока нет. Нажмите «Новый счёт» или дождитесь заказа из магазина.</p>'}`;
+},
+orders(){
+  const st={new:'<span class="pill p-warn">Новый</span>',shipped:'<span class="pill p-ok">Отгружен</span>',cancelled:'<span class="pill p-mute">Отменён</span>'};
+  return`<div class="panel-head"><h2>Заказы из магазина</h2></div>
+  <p class="note">Каждый заказ с сайта сразу становится счётом. Позвоните клиенту, отправьте счёт, после оплаты отметьте его и отгрузите.</p>
+  ${A.orders.length?`<div class="tbl-wrap"><table><thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Телефон</th><th>Комментарий</th><th>Счёт</th><th class="r">Сумма</th><th>Статус</th></tr></thead><tbody>
+  ${A.orders.map(o=>{const i=A.invoices.find(x=>x.order_id===o.id);return`<tr><td class="num">${o.id}</td><td class="num">${dt(o.date)}</td><td>${esc(o.client)}${o.inn?'<div class="muted mono">ИНН '+esc(o.inn)+'</div>':''}</td><td class="num">${esc(o.phone)}</td>
+   <td>${esc(o.comment||'')}</td><td>${i?`<button class="btn small" data-act="viewInv" data-id="${i.id}">№${i.id}</button> ${invPill(i)}`:''}</td>
+   <td class="r num">${i?rub(i.sum):''}</td><td>${st[o.status]||''}</td></tr>`}).join('')}
+  </tbody></table></div>`:'<p class="muted">Заказов из магазина пока нет.</p>'}`;
+},
+stock(){
+  return`<div class="panel-head"><h2>Склад и остатки</h2><button class="btn primary" data-act="newProd">Добавить товар</button></div>
+  <form class="formbox" id="pForm" hidden><h3 id="p-title">Новый товар</h3><input type="hidden" id="p-id">
+   <div class="fgrid"><label>Артикул<input id="p-sku" type="text"></label><label>Название<input id="p-name" type="text"></label>
+   <label>Категория<select id="p-cat">${A.cats.map(c=>`<option>${esc(c)}</option>`).join('')}</select></label>
+   <label>Единица<select id="p-unit"><option>шт</option><option>компл.</option><option>пара</option><option>м</option><option>уп.</option></select></label>
+   <label>Цена продажи, ₽<input id="p-price" type="number" min="0" step="0.01"></label></div>
+   <p class="err" id="p-err" hidden></p>
+   <div class="acts"><button class="btn primary" type="submit">Сохранить</button><button type="button" class="btn" data-act="toggle" data-v="pForm">Отмена</button><span class="muted" style="font-size:13px;align-self:center">Остаток меняется через приходы и отгрузки.</span></div></form>
+  <div class="tbl-wrap"><table><thead><tr><th>Артикул</th><th>Товар</th><th>Категория</th><th class="r">Цена</th><th class="r">Остаток</th><th></th><th></th></tr></thead><tbody>
+  ${A.products.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.name)}</td><td>${esc(p.cat)}</td><td class="r num">${rub(p.price)}</td>
+   <td class="r num"><b>${p.stock}</b> ${esc(p.unit)}</td><td>${p.stock<=0?'<span class="pill p-bad">Нет</span>':p.stock<LOW?'<span class="pill p-warn">Мало</span>':'<span class="pill p-ok">Есть</span>'}</td>
+   <td><div class="acts"><button class="btn small" data-act="editProd" data-id="${p.id}">Изменить</button><button class="btn small danger" data-act="rmProd" data-id="${p.id}">Убрать</button></div></td></tr>`).join('')}
+  </tbody></table></div>`;
+},
+receipts(){
+  return`<div class="panel-head"><h2>Приходы товара</h2><button class="btn primary" data-act="toggle" data-v="rForm">Новый приход</button></div>
+  <form class="formbox" id="rForm" hidden><h3>Приход от поставщика</h3>
+   <div class="fgrid"><label>Поставщик<input id="r-sup" type="text" placeholder="ООО «МетизПро»"></label>
+   <label>Оплатить со счёта<select id="r-bank"><option value="">Не списывать деньги</option>${A.banks.map(b=>`<option value="${b.id}">${esc(b.name)} (${rub(b.balance)})</option>`).join('')}</select></label></div>
+   <div class="lines" id="r-lines">${lineRow(true)}</div>
+   <div class="acts"><button type="button" class="btn small" data-act="addrow" data-v="r-lines" data-cost="1">Добавить строку</button></div>
+   <p class="err" id="r-err" hidden></p>
+   <div class="acts"><button class="btn primary" type="submit">Провести приход</button></div></form>
+  ${A.receipts.length?`<div class="tbl-wrap"><table><thead><tr><th>№</th><th>Дата</th><th>Поставщик</th><th>Позиции</th><th class="r">Сумма</th><th>Оплата</th></tr></thead><tbody>
+  ${A.receipts.map(r=>`<tr><td class="num">${r.id}</td><td class="num">${dt(r.date)}</td><td>${esc(r.supplier)}</td>
+   <td>${r.items.map(x=>`${esc(x.sku)} × ${x.qty}`).join(', ')}</td><td class="r num">${rub(r.sum)}</td>
+   <td>${r.bank_id?'<span class="pill p-ok">'+esc(B(r.bank_id)?.name)+'</span>':'<span class="pill p-mute">Без списания</span>'}</td></tr>`).join('')}
+  </tbody></table></div>`:'<p class="muted">Приходов пока нет. Проведите первый приход, чтобы на складе появились остатки.</p>'}`;
+},
+banks(){
+  return`<div class="panel-head"><h2>Банки</h2></div>
+  <div class="tiles">${A.banks.map(b=>`<div class="tile"><span class="muted">${esc(b.name)}${b.acc?' · р/с <span class="mono">'+esc(b.acc)+'</span>':''}</span><b class="num">${rub(b.balance)}</b></div>`).join('')}</div>
+  <form class="formbox" id="tForm"><h3>Добавить операцию вручную</h3>
+   <div class="inline-form"><label>Банк<select id="t-bank">${A.banks.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></label>
+   <label>Назначение<input id="t-text" type="text" placeholder="Аренда склада"></label>
+   <label>Сумма, ₽<input id="t-amount" type="number" step="0.01" placeholder="-35000"></label>
+   <button class="btn primary" type="submit">Добавить</button></div>
+   <p class="err" id="t-err" hidden></p>
+   <p class="muted" style="margin:0;font-size:13px">Приход денег — с плюсом, расход — с минусом. Оплаты по счетам и приходам добавляются сами. Автозагрузка выписок Альфа-Банка и Сбербанка — следующий этап.</p></form>
+  ${A.txns.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Банк</th><th>Операция</th><th class="r">Сумма</th></tr></thead><tbody>
+  ${A.txns.map(t=>`<tr><td class="num">${dt(t.date)}</td><td>${esc(B(t.bank_id)?.name)}</td><td>${esc(t.text)}</td><td class="r num ${t.amount>0?'plus':'minus'}">${t.amount>0?'+':'−'}${rub(Math.abs(t.amount))}</td></tr>`).join('')}
+  </tbody></table></div>`:'<p class="muted">Операций пока нет. Укажите текущие остатки во вкладке «Настройки».</p>'}`;
+},
+settings(){
+  const o=A.owner,f=(k,l,ph='')=>`<label>${l}<input id="o-${k}" type="text" value="${esc(o[k])}" placeholder="${esc(ph)}"></label>`;
+  return`<div class="panel-head"><h2>Настройки</h2></div>
+  <form class="formbox" id="oForm"><h3>Реквизиты ИП для счетов</h3>
+   <div class="fgrid">${f('name','ФИО ИП','ИП Иванов Иван Иванович')}${f('inn','ИНН')}${f('ogrnip','ОГРНИП')}${f('addr','Адрес')}
+   ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
+   ${f('phone','Телефон на сайте','+7 ')}${f('email','Почта на сайте')}</div>
+   <div class="acts"><button class="btn primary" type="submit">Сохранить реквизиты</button></div></form>
+  <div class="formbox"><h3>Банки и текущие остатки</h3>
+   <p class="muted" style="margin:0;font-size:13px">Впишите, сколько сейчас денег на каждом счёте. Разница запишется как корректировка.</p>
+   ${A.banks.map(b=>`<form class="inline-form" data-bank="${b.id}"><label>Банк<input class="b-name" type="text" value="${esc(b.name)}"></label>
+    <label>Счёт (последние цифры)<input class="b-acc" type="text" value="${esc(b.acc)}"></label>
+    <label>Остаток, ₽<input class="b-bal" type="number" step="0.01" value="${b.balance}"></label><button class="btn" type="submit">Сохранить</button></form>`).join('')}
+   <form class="inline-form" data-bank=""><label>Новый банк<input class="b-name" type="text" placeholder="Название"></label>
+    <label>Счёт<input class="b-acc" type="text"></label><span></span><button class="btn" type="submit">Добавить</button></form>
+  </div>`;
+}
+};
+
+function invoiceDoc(i){
+  const o=A.owner;
+  return`<div class="drawer-head"><h2>Счёт №${i.id}</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+  ${!o.name?'<p class="note">Реквизиты не заполнены. Откройте «Настройки».</p>':''}
+  <div class="doc">
+   <div class="req"><span class="muted">Поставщик</span><span>${esc(o.name)}${o.inn?', ИНН '+esc(o.inn):''}${o.ogrnip?', ОГРНИП '+esc(o.ogrnip):''}${o.addr?', '+esc(o.addr):''}</span>
+   <span class="muted">Банк</span><span>${esc(o.bank)}${o.bik?', БИК '+esc(o.bik):''}${o.ks?', к/с '+esc(o.ks):''}</span>
+   <span class="muted">Р/с</span><span class="mono">${esc(o.acc)}</span></div>
+   <h2>Счёт на оплату №${i.id} от ${dt(i.date)}</h2>
+   <div class="req"><span class="muted">Покупатель</span><span>${esc(i.client)}${i.inn?', ИНН '+esc(i.inn):''}</span></div>
+   <div class="tbl-wrap"><table><thead><tr><th>№</th><th>Товар</th><th class="r">Кол-во</th><th class="r">Цена</th><th class="r">Сумма</th></tr></thead><tbody>
+   ${i.items.map((x,k)=>`<tr><td>${k+1}</td><td>${esc(x.sku)} ${esc(x.name)}</td><td class="r num">${x.qty} ${esc(x.unit)}</td><td class="r num">${rub(x.price)}</td><td class="r num">${rub(x.qty*x.price)}</td></tr>`).join('')}
+   </tbody></table></div>
+   <div class="total"><span>Итого к оплате</span><span class="num">${rub(i.sum)}</span></div>
+   <div class="muted">Без НДС (УСН, п. 2 ст. 346.11 НК РФ).</div>
+  </div>
+  <div class="acts"><button class="btn primary" data-act="printInv">Печать / PDF</button></div>`;
+}
+function modal(html){$('#layer').innerHTML=`<div class="veil" data-act="close"></div><div class="modal" role="dialog" aria-modal="true">${html}</div>`}
+
+/* ---------- события ---------- */
+const armed=new Set();
+document.addEventListener('click',async e=>{
+  const t=e.target.closest('[data-act]');if(!t)return;
+  const a=t.dataset.act,id=t.dataset.id,v=t.dataset.v;
+  if(a==='mode'){location.hash=v}
+  else if(a==='cat'){filt.cat=v;$('#app').innerHTML=shopView();renderGrid()}
+  else if(a==='add'){const p=P(id);if((cart[id]||0)<p.stock){cart[id]=(cart[id]||0)+1;saveCart();updCount();renderGrid();toast('Добавлено: '+p.name)}else toast('Больше нет на складе')}
+  else if(a==='cart'){cartDone=null;drawCart()}
+  else if(a==='close')closeLayer();
+  else if(a==='inc'){if(cart[id]<P(id).stock)cart[id]++;else toast('Больше нет на складе');saveCart();drawCart();updCount();renderGrid()}
+  else if(a==='dec'){cart[id]--;if(cart[id]<=0)delete cart[id];saveCart();drawCart();updCount();renderGrid()}
+  else if(a==='tab'){tab=v;$('#app').innerHTML=adminView()}
+  else if(a==='logout'){await api('/api/logout',{}).catch(()=>{});A=null;location.hash='';render()}
+  else if(a==='toggle'){const f=$('#'+v);f.hidden=!f.hidden}
+  else if(a==='addrow'){$('#'+v).insertAdjacentHTML('beforeend',lineRow(t.dataset.cost==='1'))}
+  else if(a==='rmrow'){const box=t.closest('.lines');if(box.children.length>1)t.closest('.line').remove()}
+  else if(a==='viewInv'){modal(invoiceDoc(A.invoices.find(i=>i.id==id)))}
+  else if(a==='printInv'){window.print()}
+  else if(a==='payInv'){const i=A.invoices.find(x=>x.id==id);
+    modal(`<div class="drawer-head"><h2>Оплата счёта №${i.id}</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+    <p style="margin:0">${esc(i.client)} · <b class="num">${rub(i.sum)}</b></p>
+    <label>На какой счёт пришли деньги<select id="payBank">${A.banks.map(b=>`<option value="${b.id}">${esc(b.name)} ${esc(b.acc)}</option>`).join('')}</select></label>
+    <div class="acts"><button class="btn primary" data-act="payOk" data-id="${i.id}">Отметить оплату</button><button class="btn" data-act="close">Отмена</button></div>`)}
+  else if(a==='payOk'){const bank=$('#payBank').value;closeLayer();act('/api/admin/invoices/pay',{id:+id,bank:+bank},`Счёт №${id} оплачен`)}
+  else if(a==='ship'||a==='cancelInv'||a==='rmProd'){
+    const k=a+id;
+    if(!armed.has(k)){armed.add(k);t.textContent='Точно?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent={ship:'Отгрузить',cancelInv:'Отменить',rmProd:'Убрать'}[a]},4000);return}
+    armed.delete(k);
+    if(a==='ship')act('/api/admin/invoices/ship',{id:+id},`Счёт №${id} отгружен, остатки обновлены`);
+    if(a==='cancelInv')act('/api/admin/invoices/cancel',{id:+id},`Счёт №${id} отменён`);
+    if(a==='rmProd')act('/api/admin/products/remove',{id:+id},'Товар убран из каталога');
+  }
+  else if(a==='newProd'||a==='editProd'){
+    const f=$('#pForm'),p=a==='editProd'?A.products.find(x=>x.id==id):null;f.hidden=false;
+    $('#p-title').textContent=p?'Изменить товар':'Новый товар';$('#p-id').value=p?p.id:'';
+    $('#p-sku').value=p?p.sku:'';$('#p-name').value=p?p.name:'';$('#p-cat').value=p?p.cat:A.cats[0];$('#p-unit').value=p?p.unit:'шт';$('#p-price').value=p?p.price:'';
+    f.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+});
+document.addEventListener('input',e=>{if(e.target.id==='q'){filt.q=e.target.value;renderGrid()}});
+document.addEventListener('submit',async e=>{
+  e.preventDefault();const f=e.target;
+  if(f.id==='checkout')return checkout(f);
+  if(f.id==='gate'){
+    try{await api('/api/login',{password:$('#pin').value});A=null;render()}
+    catch(err){showErr('pin-err',err.message)}
+    return;
+  }
+  const run=async(errId,url,body,msg)=>{try{await api(url,body);await reload(msg)}catch(err){if(err.status===401){A=null;render()}else if(errId)showErr(errId,err.message);else toast(err.message)}};
+  if(f.id==='invForm')run('i-err','/api/admin/invoices',{client:$('#i-client').value,inn:$('#i-inn').value,items:readLines('i-lines',false)},'Счёт выставлен');
+  else if(f.id==='pForm')run('p-err','/api/admin/products',{id:$('#p-id').value||undefined,sku:$('#p-sku').value,name:$('#p-name').value,cat:$('#p-cat').value,unit:$('#p-unit').value,price:$('#p-price').value},'Товар сохранён');
+  else if(f.id==='rForm')run('r-err','/api/admin/receipts',{supplier:$('#r-sup').value,bank:$('#r-bank').value,items:readLines('r-lines',true)},'Приход проведён, остатки увеличены');
+  else if(f.id==='tForm')run('t-err','/api/admin/txns',{bank:$('#t-bank').value,text:$('#t-text').value,amount:$('#t-amount').value},'Операция добавлена');
+  else if(f.id==='oForm'){const b={};for(const k of Object.keys(A.owner))b[k]=$('#o-'+k)?.value??'';run(null,'/api/admin/owner',b,'Реквизиты сохранены')}
+  else if(f.dataset.bank!==undefined)run(null,'/api/admin/banks',{id:f.dataset.bank||undefined,name:f.querySelector('.b-name').value,acc:f.querySelector('.b-acc').value,balance:f.dataset.bank?f.querySelector('.b-bal').value:undefined},'Банк сохранён');
+});
+render();
+</script>
+<style media="print">
+body *{visibility:hidden}.modal,.modal *{visibility:visible}.modal{position:absolute;inset:0;transform:none;width:100%;max-height:none;padding:0}
+.modal .x,.modal .acts,.modal .note{display:none}.veil{display:none}
+</style>
+</body>
+</html>
