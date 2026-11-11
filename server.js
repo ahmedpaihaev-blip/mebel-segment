@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS receipts (id INTEGER PRIMARY KEY, date TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS receipt_items (receipt_id INTEGER NOT NULL REFERENCES receipts(id), product_id INTEGER NOT NULL REFERENCES products(id), qty INTEGER NOT NULL, cost REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `);
+if (!db.prepare('PRAGMA table_info(products)').all().some(c => c.name === 'photo')) db.exec('ALTER TABLE products ADD COLUMN photo TEXT');
+const UPLOADS = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOADS, { recursive: true });
 
 // Первичное наполнение: банки владельца и примерный каталог (меняется в кабинете).
 if (!db.prepare('SELECT COUNT(*) c FROM banks').get().c) {
@@ -136,7 +139,7 @@ const routes = {
   'GET /api/catalog': () => ({
     cats: CATS,
     owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
-    products: db.prepare('SELECT id, sku, name, cat, unit, price, stock FROM products WHERE active = 1 ORDER BY cat, name').all(),
+    products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo FROM products WHERE active = 1 ORDER BY cat, name').all(),
   }),
   'POST /api/orders': (b) => tx(() => {
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
@@ -216,6 +219,24 @@ const routes = {
     }
     return { id: Number(db.prepare('INSERT INTO products (sku, name, cat, unit, price) VALUES (?, ?, ?, ?, ?)').run(sku, name, cat, unit, price).lastInsertRowid) };
   },
+  'POST /api/admin/products/photo': (b) => {
+    const p = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(posInt(b.id));
+    if (!p) throw new UserError('Товар не найден.', 404);
+    let name = null;
+    if (b.data) {
+      const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data));
+      if (!m) throw new UserError('Нужна картинка JPG, PNG или WebP.');
+      const buf = Buffer.from(m[2], 'base64');
+      const sig = buf.subarray(0, 12).toString('hex');
+      const ok = (m[1] === 'jpeg' && sig.startsWith('ffd8ff')) || (m[1] === 'png' && sig.startsWith('89504e47')) || (m[1] === 'webp' && sig.startsWith('52494646') && sig.endsWith('57454250'));
+      if (!ok) throw new UserError('Файл не похож на картинку.');
+      name = `${p.id}-${crypto.randomBytes(6).toString('hex')}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`;
+      fs.writeFileSync(path.join(UPLOADS, name), buf);
+    }
+    db.prepare('UPDATE products SET photo = ? WHERE id = ?').run(name, p.id);
+    if (p.photo) fs.rm(path.join(UPLOADS, path.basename(p.photo)), () => {});
+    return { photo: name };
+  },
   'POST /api/admin/products/remove': (b) => {
     db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(posInt(b.id));
     return { ok: true };
@@ -280,10 +301,10 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
-function readBody(req) {
+function readBody(req, limit = 256 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
-    req.on('data', c => { size += c.length; if (size > 256 * 1024) { reject(new UserError('Слишком большой запрос.', 413)); req.destroy(); } else chunks.push(c); });
+    req.on('data', c => { size += c.length; if (size > limit) { reject(new UserError('Слишком большой запрос.', 413)); req.destroy(); } else chunks.push(c); });
     req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new UserError('Неверный формат запроса.')); } });
     req.on('error', reject);
   });
@@ -304,6 +325,15 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
   const key = `${req.method} ${url.pathname}`;
   try {
+    if (url.pathname.startsWith('/uploads/')) {
+      const name = url.pathname.slice(9);
+      if (!/^[0-9]+-[0-9a-f]{12}\.(jpg|png|webp)$/.test(name)) return send(res, 404, 'Not found', 'text/plain');
+      return fs.readFile(path.join(UPLOADS, name), (err, data) => {
+        if (err) return send(res, 404, 'Not found', 'text/plain');
+        res.writeHead(200, { 'Content-Type': MIME['.' + name.split('.').pop()], 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+        res.end(data);
+      });
+    }
     if (!url.pathname.startsWith('/api/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Метод не поддерживается.' });
       return serveStatic(req, res, url.pathname);
@@ -316,7 +346,7 @@ const server = http.createServer(async (req, res) => {
       const origin = req.headers.origin;
       if (origin && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
     }
-    const body = req.method === 'POST' ? await readBody(req) : {};
+    const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/admin/products/photo' ? 12 * 1024 * 1024 : 256 * 1024) : {};
     send(res, 200, await handler(body, req, res));
   } catch (e) {
     if (e instanceof UserError) return send(res, e.code, { error: e.message });
