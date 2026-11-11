@@ -139,10 +139,12 @@ const routes = {
     products: db.prepare('SELECT id, sku, name, cat, unit, price, stock FROM products WHERE active = 1 ORDER BY cat, name').all(),
   }),
   'POST /api/orders': (b) => tx(() => {
-    const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, ''), comment = str(b.comment, 500);
+    const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
     if (!client || phone.replace(/\D/g, '').length < 10) throw new UserError('Укажите имя и телефон из 10–11 цифр.');
+    const tags = [b.kind === 'company' ? 'Организация / ИП' : 'Частное лицо', b.delivery === 'delivery' ? 'Доставка' : 'Самовывоз'];
+    const comment = [tags.join(' · '), str(b.comment, 500)].filter(Boolean).join('. ');
+    // товар без остатка можно заказать «под заказ»: владелец подтвердит срок, списание — только при отгрузке
     const items = readItems(b.items, false);
-    for (const x of items) if (x.qty > x.p.stock) throw new UserError(`«${x.p.name}»: на складе только ${x.p.stock} ${x.p.unit}.`);
     const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment) VALUES (?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
