@@ -31,9 +31,12 @@ CREATE TABLE IF NOT EXISTS invoice_items (invoice_id INTEGER NOT NULL REFERENCES
 CREATE TABLE IF NOT EXISTS receipts (id INTEGER PRIMARY KEY, date TEXT NOT NULL, supplier TEXT NOT NULL, bank_id INTEGER REFERENCES banks(id));
 CREATE TABLE IF NOT EXISTS receipt_items (receipt_id INTEGER NOT NULL REFERENCES receipts(id), product_id INTEGER NOT NULL REFERENCES products(id), qty INTEGER NOT NULL, cost REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, pass TEXT NOT NULL, name TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', inn TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, kind TEXT NOT NULL, customer_id INTEGER, exp INTEGER NOT NULL);
 `);
-for (const [col, type] of [['photo', 'TEXT'], ['box', 'INTEGER'], ['descr', 'TEXT']]) {
-  if (!db.prepare('PRAGMA table_info(products)').all().some(c => c.name === col)) db.exec(`ALTER TABLE products ADD COLUMN ${col} ${type}`);
+for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER']]) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
 }
 const UPLOADS = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOADS, { recursive: true });
@@ -97,8 +100,52 @@ const posInt = v => { const n = Math.floor(Number(v)); return Number.isFinite(n)
 const money = v => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? r2(n) : NaN; };
 
 /* ---------- сессии ---------- */
-const sessions = new Map();
+// сессии хранятся в базе (в виде хеша токена), чтобы переживать обновления сайта
 const loginFails = new Map();
+const tokenHash = t => crypto.createHash('sha256').update(String(t)).digest('hex');
+function newSession(res, req, kind, customerId = null) {
+  const t = crypto.randomBytes(32).toString('hex');
+  db.prepare('DELETE FROM sessions WHERE exp < ?').run(Date.now());
+  db.prepare('INSERT INTO sessions (token, kind, customer_id, exp) VALUES (?, ?, ?, ?)').run(tokenHash(t), kind, customerId, Date.now() + SESSION_TTL);
+  const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${kind === 'admin' ? 'sid' : 'cid'}=${t}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}${secure}`);
+}
+function endSession(req, res, kind) {
+  const name = kind === 'admin' ? 'sid' : 'cid', t = cookies(req)[name];
+  if (t) db.prepare('DELETE FROM sessions WHERE token = ?').run(tokenHash(t));
+  res.setHeader('Set-Cookie', `${name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+}
+function sessionOf(req, kind) {
+  const t = cookies(req)[kind === 'admin' ? 'sid' : 'cid'];
+  if (!t) return null;
+  const s = db.prepare('SELECT * FROM sessions WHERE token = ? AND kind = ?').get(tokenHash(t), kind);
+  return s && s.exp > Date.now() ? s : null;
+}
+function tooMany(req, key) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+  const k = key + ip, f = loginFails.get(k) || { n: 0, until: 0 };
+  if (f.until > Date.now()) throw new UserError('Слишком много попыток. Подождите 10 минут.', 429);
+  return { fail() { f.n++; if (f.n >= 5) { f.until = Date.now() + 10 * 60 * 1000; f.n = 0; } loginFails.set(k, f); }, ok() { loginFails.delete(k); } };
+}
+// пароли клиентов: scrypt с солью
+function hashPass(pw) { const salt = crypto.randomBytes(16); return 'scrypt$' + salt.toString('hex') + '$' + crypto.scryptSync(pw, salt, 32).toString('hex'); }
+function checkPass(pw, stored) {
+  const [, salt, hash] = String(stored).split('$');
+  if (!salt || !hash) return false;
+  return crypto.timingSafeEqual(crypto.scryptSync(pw, Buffer.from(salt, 'hex'), 32), Buffer.from(hash, 'hex'));
+}
+const digits = v => String(v || '').replace(/\D/g, '').replace(/^8(?=\d{10}$)/, '7');
+const normEmail = v => str(v, 160).toLowerCase();
+const validEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+// привязать заказы, оформленные без входа, к клиенту по номеру телефона
+function linkOrders(c) {
+  const d = digits(c.phone); if (d.length < 10) return;
+  const free = db.prepare('SELECT id, phone FROM orders WHERE customer_id IS NULL').all();
+  const upd = db.prepare('UPDATE orders SET customer_id = ? WHERE id = ?');
+  for (const o of free) if (digits(o.phone) === d) upd.run(c.id, o.id);
+}
+const publicCustomer = c => ({ id: c.id, email: c.email, name: c.name, phone: c.phone, company: c.company, inn: c.inn, created: c.created });
+function customerOf(req) { const s = sessionOf(req, 'customer'); return s ? db.prepare('SELECT * FROM customers WHERE id = ?').get(s.customer_id) || null : null; }
 function cookies(req) {
   const out = {};
   for (const part of (req.headers.cookie || '').split(';')) {
@@ -106,12 +153,7 @@ function cookies(req) {
   }
   return out;
 }
-function isAdmin(req) {
-  const t = cookies(req).sid; const s = t && sessions.get(t);
-  if (!s) return false;
-  if (s.exp < Date.now()) { sessions.delete(t); return false; }
-  return true;
-}
+function isAdmin(req) { return !!sessionOf(req, 'admin'); }
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(a).digest(), hb = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ha, hb);
@@ -133,6 +175,13 @@ function adminState() {
     txns: db.prepare('SELECT * FROM txns ORDER BY id DESC LIMIT 300').all(),
     invoices: invoiceRows(),
     orders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 300').all(),
+    customers: db.prepare(`SELECT c.id, c.email, c.name, c.phone, c.company, c.inn, c.created,
+        (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status != 'cancelled') AS orders,
+        (SELECT COALESCE(SUM(ii.qty * ii.price), 0) FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id JOIN orders o ON o.id = i.order_id
+          WHERE o.customer_id = c.id AND i.status != 'cancelled') AS total,
+        (SELECT COALESCE(SUM(ii.qty * ii.price), 0) FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id JOIN orders o ON o.id = i.order_id
+          WHERE o.customer_id = c.id AND i.status = 'paid') AS paid
+      FROM customers c ORDER BY total DESC, c.id DESC`).all(),
     receipts: db.prepare('SELECT * FROM receipts ORDER BY id DESC LIMIT 300').all()
       .map(r => { const it = recItems.all(r.id); return { ...r, items: it, sum: r2(it.reduce((s, x) => s + x.qty * x.cost, 0)) }; }),
   };
@@ -163,37 +212,87 @@ const routes = {
     owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
     products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo, box, descr FROM products WHERE active = 1 ORDER BY id').all(),
   }),
-  'POST /api/orders': (b) => tx(() => {
+  'POST /api/orders': (b, req) => tx(() => {
+    const me = customerOf(req);
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
     if (!client || phone.replace(/\D/g, '').length < 10) throw new UserError('Укажите имя и телефон из 10–11 цифр.');
     const tags = [b.kind === 'company' ? 'Организация / ИП' : 'Частное лицо', b.delivery === 'delivery' ? 'Доставка' : 'Самовывоз'];
     const comment = [tags.join(' · '), str(b.comment, 500)].filter(Boolean).join('. ');
     // товар без остатка можно заказать «под заказ»: владелец подтвердит срок, списание — только при отгрузке
     const items = readItems(b.items, false);
-    const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment) VALUES (?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null);
+    const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id) VALUES (?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
   }),
   'POST /api/login': (b, req, res) => {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-    const f = loginFails.get(ip) || { n: 0, until: 0 };
-    if (f.until > Date.now()) throw new UserError('Слишком много попыток. Подождите 10 минут.', 429);
-    if (!ADMIN_PASSWORD || !safeEqual(str(b.password, 200), ADMIN_PASSWORD)) {
-      f.n++; if (f.n >= 5) { f.until = Date.now() + 10 * 60 * 1000; f.n = 0; }
-      loginFails.set(ip, f);
-      throw new UserError('Неверный пароль.', 401);
-    }
-    loginFails.delete(ip);
-    const t = crypto.randomBytes(32).toString('hex');
-    sessions.set(t, { exp: Date.now() + SESSION_TTL });
-    const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
-    res.setHeader('Set-Cookie', `sid=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL / 1000}${secure}`);
+    const lim = tooMany(req, 'admin:');
+    if (!ADMIN_PASSWORD || !safeEqual(str(b.password, 200), ADMIN_PASSWORD)) { lim.fail(); throw new UserError('Неверный пароль.', 401); }
+    lim.ok(); newSession(res, req, 'admin');
     return { ok: true };
   },
-  'POST /api/logout': (b, req, res) => {
-    sessions.delete(cookies(req).sid);
-    res.setHeader('Set-Cookie', 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  'POST /api/logout': (b, req, res) => { endSession(req, res, 'admin'); return { ok: true }; },
+
+  /* ---- личный кабинет клиента ---- */
+  'POST /api/account/register': (b, req, res) => {
+    const email = normEmail(b.email), pw = String(b.password || ''), name = str(b.name, 120), phone = str(b.phone, 40);
+    if (!validEmail(email)) throw new UserError('Проверьте адрес почты.');
+    if (pw.length < 8 || pw.length > 200) throw new UserError('Пароль — не меньше 8 символов.');
+    if (!name) throw new UserError('Укажите имя или название компании.');
+    if (digits(phone).length < 10) throw new UserError('Укажите телефон из 10–11 цифр.');
+    if (db.prepare('SELECT 1 FROM customers WHERE email = ?').get(email)) throw new UserError('Эта почта уже зарегистрирована. Войдите или попросите сбросить пароль.', 409);
+    const id = Number(db.prepare('INSERT INTO customers (email, pass, name, phone, company, inn, created) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now()).lastInsertRowid);
+    const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+    linkOrders(c); newSession(res, req, 'customer', id);
     return { ok: true };
+  },
+  'POST /api/account/login': (b, req, res) => {
+    const lim = tooMany(req, 'cust:');
+    const c = db.prepare('SELECT * FROM customers WHERE email = ?').get(normEmail(b.email));
+    if (!c || !checkPass(String(b.password || ''), c.pass)) { lim.fail(); throw new UserError('Неверная почта или пароль.', 401); }
+    lim.ok(); linkOrders(c); newSession(res, req, 'customer', c.id);
+    return { ok: true };
+  },
+  'POST /api/account/logout': (b, req, res) => { endSession(req, res, 'customer'); return { ok: true }; },
+  'GET /api/account/me': (b, req) => {
+    const c = customerOf(req); if (!c) throw new UserError('Войдите в личный кабинет.', 401);
+    const orders = db.prepare('SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC').all(c.id);
+    const invs = orders.length ? invoiceRows(`WHERE order_id IN (${orders.map(() => '?').join(',')})`, ...orders.map(o => o.id)) : [];
+    const list = orders.map(o => ({ ...o, invoice: invs.find(i => i.order_id === o.id) || null }));
+    const live = list.filter(o => o.invoice && o.invoice.status !== 'cancelled');
+    const year = String(new Date().getFullYear());
+    const o = getOwner();
+    return {
+      me: publicCustomer(c), orders: list,
+      totals: { orders: live.length, total: r2(live.reduce((s, x) => s + x.invoice.sum, 0)),
+        year: r2(live.filter(x => x.date.startsWith(year)).reduce((s, x) => s + x.invoice.sum, 0)),
+        unpaid: r2(live.filter(x => x.invoice.status === 'issued').reduce((s, x) => s + x.invoice.sum, 0)) },
+      owner: { name: o.name, inn: o.inn, ogrnip: o.ogrnip, addr: o.addr, bank: o.bank, acc: o.acc, bik: o.bik, ks: o.ks, phone: o.phone },
+    };
+  },
+  'POST /api/account/profile': (b, req) => {
+    const c = customerOf(req); if (!c) throw new UserError('Войдите в личный кабинет.', 401);
+    const name = str(b.name, 120), phone = str(b.phone, 40);
+    if (!name) throw new UserError('Укажите имя или название компании.');
+    if (digits(phone).length < 10) throw new UserError('Укажите телефон из 10–11 цифр.');
+    db.prepare('UPDATE customers SET name = ?, phone = ?, company = ?, inn = ? WHERE id = ?').run(name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), c.id);
+    linkOrders({ ...c, phone });
+    return { ok: true };
+  },
+  'POST /api/account/password': (b, req) => {
+    const c = customerOf(req); if (!c) throw new UserError('Войдите в личный кабинет.', 401);
+    if (!checkPass(String(b.old || ''), c.pass)) throw new UserError('Текущий пароль указан неверно.');
+    const pw = String(b.password || ''); if (pw.length < 8 || pw.length > 200) throw new UserError('Новый пароль — не меньше 8 символов.');
+    db.prepare('UPDATE customers SET pass = ? WHERE id = ?').run(hashPass(pw), c.id);
+    return { ok: true };
+  },
+  'POST /api/admin/customers/reset': (b) => {
+    const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(posInt(b.id));
+    if (!c) throw new UserError('Клиент не найден.', 404);
+    const temp = crypto.randomBytes(6).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 6) + Math.floor(10 + Math.random() * 89);
+    db.prepare('UPDATE customers SET pass = ? WHERE id = ?').run(hashPass(temp), c.id);
+    db.prepare("DELETE FROM sessions WHERE kind = 'customer' AND customer_id = ?").run(c.id);
+    return { password: temp };
   },
   'GET /api/admin/state': () => adminState(),
   'POST /api/admin/invoices': (b) => tx(() => {

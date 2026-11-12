@@ -243,6 +243,23 @@ textarea{resize:vertical}
 .done{background:var(--chip);border-radius:var(--r-lg);padding:18px;display:grid;gap:6px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:var(--r-pill);border:2px solid var(--accent);z-index:30;font-size:13px;font-weight:700;max-width:calc(100% - 32px)}
 
+/* личный кабинет клиента */
+.acc-btn{gap:6px}
+.acc-btn.on{background:var(--chip);border-color:var(--chip)}
+.acc-wrap{padding-block:36px 60px}
+.acc-card{max-width:440px;margin:24px auto;background:var(--surface);border-radius:var(--r-xl);padding:28px;display:grid;gap:14px}
+.acc-card h2{font-size:26px}
+.acc-wrap.wide{display:grid;gap:18px}
+.acc-head{display:flex;justify-content:space-between;align-items:end;gap:16px;flex-wrap:wrap}
+.acc-sub{font-family:var(--f-display);font-weight:800;text-transform:uppercase;font-size:18px;margin-top:10px}
+.ord{background:var(--surface);border-radius:var(--r-lg);padding:18px 20px;display:grid;gap:12px}
+.ord.empty{color:var(--muted)}
+.ord-top,.ord-bot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.ord-items{list-style:none;margin:0;padding:0;display:grid;gap:6px;border-block:1px solid var(--line);padding-block:10px}
+.ord-items li{display:flex;justify-content:space-between;gap:12px;font-size:14px}
+.ord-items li>span:first-child{min-width:0}
+.ord-sum{font-family:var(--f-display);font-weight:800;font-size:20px}
+@media (max-width:640px){.acc-btn span{display:none}.ord-items li{flex-direction:column;gap:0}}
 /* кабинет */
 .gate{max-width:380px;margin:60px auto;background:var(--surface);border-radius:var(--r-xl);padding:26px;display:grid;gap:12px}
 .gate h2{font-size:22px}
@@ -271,7 +288,7 @@ td.r,th.r{text-align:right}
 .p-ok{color:var(--ok)}.p-warn{color:var(--warn)}.p-bad{color:var(--bad)}.p-mute{color:var(--muted)}
 .plus{color:var(--ok)}.minus{color:var(--bad)}
 .acts{display:flex;gap:6px;flex-wrap:wrap}
-.formbox{background:var(--surface);border-radius:var(--r-lg);padding:18px;display:grid;gap:12px}
+.formbox{background:var(--surface);border-radius:var(--r-lg);padding:18px;display:grid;gap:12px;align-content:start}
 .formbox h3{font-size:16px;font-weight:800}
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
 .line{display:grid;grid-template-columns:minmax(0,1fr) 90px 120px 40px;gap:8px;align-items:center}
@@ -338,6 +355,7 @@ body *{visibility:hidden}.modal,.modal *{visibility:visible}.modal{position:abso
     <button id="m-shop" data-act="mode" data-v="">Магазин</button>
     <button id="m-admin" data-act="mode" data-v="admin">Кабинет</button>
   </div>
+  <a id="accBtn" class="btn acc-btn" href="#account"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="2"/></svg><span id="accTxt">Войти</span></a>
   <button id="cartBtn" class="btn primary cart-btn" data-act="cart">Корзина <span class="count num" id="cartCount">0</span></button>
 </div></div></header>
 <main id="app"><div class="wrap empty">Загрузка…</div></main>
@@ -359,7 +377,7 @@ const ICONS={
 const HERO_ART='<img class="hero-photo" src="/hero-hinge.jpg" alt="Петля 3D с доводчиком Mebel Segment" loading="eager">';
 const TICKER=['Доводчик — тихое закрывание','Clip-on без инструмента','Упаковка с крепежом','Опт коробками','3D-регулировка','Счёт для юрлиц и ИП','Также на Ozon'];
 const LOW=10;
-let C=null, A=null, cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup'}, lastOrder=null;
+let C=null, A=null, U=undefined, accTab='login', cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup'}, lastOrder=null;
 try{cart=JSON.parse(localStorage.getItem('cart'))||{}}catch(e){}
 const saveCart=()=>{try{localStorage.setItem('cart',JSON.stringify(cart))}catch(e){}};
 
@@ -376,6 +394,9 @@ async function api(url,body){
   return data;
 }
 const isAdminRoute=()=>location.hash==='#admin';
+const isAccountRoute=()=>location.hash==='#account';
+async function loadMe(){try{U=await api('/api/account/me')}catch(e){U=null}updAcc()}
+function updAcc(){$('#accTxt').textContent=U?'Кабинет':'Войти';$('#accBtn').classList.toggle('on',!!U)}
 const owner=()=>(A&&A.owner)||(C&&C.owner)||{};
 
 /* ---------- общий рендер ---------- */
@@ -383,9 +404,15 @@ async function render(){
   const adm=isAdminRoute();
   $('#modes').hidden=!A;
   $('#m-shop').setAttribute('aria-pressed',!adm);$('#m-admin').setAttribute('aria-pressed',adm);
-  $('#cartBtn').hidden=adm;$('#nav').hidden=adm;
+  const accR=isAccountRoute();
+  $('#cartBtn').hidden=adm;$('#nav').hidden=adm||accR;$('#accBtn').hidden=adm;
   updCount();
-  if(adm){
+  if(U===undefined)await loadMe();
+  if(accR){
+    await loadMe();
+    if(!C){try{C=await api('/api/catalog')}catch(e){}}
+    $('#app').innerHTML=accountView();scrollTo(0,0);
+  }else if(adm){
     if(!A){try{A=await api('/api/admin/state')}catch(e){if(e.status!==401){$('#app').innerHTML=`<div class="wrap empty">${esc(e.message)}</div>`;return}}}
     $('#modes').hidden=!A;
     $('#app').innerHTML=A?adminView():loginView();
@@ -399,7 +426,7 @@ async function render(){
 }
 window.addEventListener('hashchange',()=>{
   closeLayer();
-  if(!isAdminRoute()&&$('#shop')){const t=document.getElementById(location.hash.slice(1));if(t)t.scrollIntoView();else if(!location.hash||location.hash==='#top')scrollTo(0,0);return}
+  if(!isAdminRoute()&&!isAccountRoute()&&$('#shop')){const t=document.getElementById(location.hash.slice(1));if(t)t.scrollIntoView();else if(!location.hash||location.hash==='#top')scrollTo(0,0);return}
   render();
 });
 function renderFoot(){
@@ -527,19 +554,20 @@ function orderText(name,phone){
 }
 function checkoutView(errMsg){
   const o=owner(),n=cartIds().length,wa=digits(o.phone);
-  const v=id=>esc(($('#'+id)||{}).value||'');
+  const v=(id,d='')=>{const el=$('#'+id);return esc(el?el.value:d)};const me=U&&U.me;
   return`<div class="m-head"><div><h2 class="caps">Оформление заказа</h2><p class="hint" style="margin-top:6px">Менеджер перезвонит, подтвердит наличие, итоговую цену и доставку.</p></div><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
   <form class="stack" id="checkout">
    <div class="seg" role="group" aria-label="Покупатель"><button type="button" data-act="ck" data-k="kind" data-v="person" aria-pressed="${ck.kind==='person'}">Частное лицо</button><button type="button" data-act="ck" data-k="kind" data-v="company" aria-pressed="${ck.kind==='company'}">Организация / ИП</button></div>
-   <label>${ck.kind==='company'?'Название организации или ИП':'Имя'} *<input id="c-name" type="text" required autocomplete="name" value="${v('c-name')}"></label>
-   <label>Телефон *<input id="c-phone" type="tel" required placeholder="+7 900 000-00-00" autocomplete="tel" value="${v('c-phone')}"></label>
-   ${ck.kind==='company'?`<label>ИНН<input id="c-inn" type="text" inputmode="numeric" value="${v('c-inn')}"></label>`:''}
+   <label>${ck.kind==='company'?'Название организации или ИП':'Имя'} *<input id="c-name" type="text" required autocomplete="name" value="${v('c-name',me?(ck.kind==='company'&&me.company?me.company:me.name):'')}"></label>
+   <label>Телефон *<input id="c-phone" type="tel" required placeholder="+7 900 000-00-00" autocomplete="tel" value="${v('c-phone',me?me.phone:'')}"></label>
+   ${ck.kind==='company'?`<label>ИНН<input id="c-inn" type="text" inputmode="numeric" value="${v('c-inn',me?me.inn:'')}"></label>`:''}
    <div class="seg" role="group" aria-label="Получение"><button type="button" data-act="ck" data-k="delivery" data-v="pickup" aria-pressed="${ck.delivery==='pickup'}">Самовывоз</button><button type="button" data-act="ck" data-k="delivery" data-v="delivery" aria-pressed="${ck.delivery==='delivery'}">Доставка</button></div>
    <label>${ck.delivery==='delivery'?'Адрес доставки и комментарий':'Комментарий'}<textarea id="c-comment" rows="3">${v('c-comment')}</textarea></label>
    <div class="total"><span class="muted">${n} ${n===1?'позиция':n<5?'позиции':'позиций'}</span><b class="num">${rub(cartSum())}</b></div>
    ${errMsg?`<p class="err">${esc(errMsg)}${wa?` Нажмите «Отправить в WhatsApp» или позвоните ${esc(o.phone)}.`:''}</p>`:''}
    <button class="btn primary block" type="submit">Отправить заказ</button>
    ${wa?`<button class="btn block" type="button" data-act="wa">Отправить в WhatsApp</button>`:''}
+   <p class="hint">${me?`Заказ сохранится в вашем личном кабинете (${esc(me.email)}).`:'<a href="#account" data-act="close">Войдите или зарегистрируйтесь</a>, чтобы видеть историю заказов.'}</p>
    <p class="hint">Нажимая «Отправить», вы соглашаетесь на обработку контактных данных для связи по заказу.</p>
   </form>`;
 }
@@ -549,14 +577,73 @@ async function checkout(f){
   try{
     const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn')?.value||'',comment:$('#c-comment').value,kind:ck.kind,delivery:ck.delivery,
       items:cartIds().map(id=>({pid:+id,qty:cart[id]}))});
-    lastOrder=r;cart={};saveCart();C=null;A=null;await render();
+    lastOrder=r;cart={};saveCart();C=null;A=null;if(U)U=undefined;await render();
     modal(`<div class="m-head"><h2 class="caps">Заказ принят</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
-     <div class="done"><b>Заказ №${r.order} на ${rub(r.sum)}</b><span>Менеджер перезвонит, подтвердит наличие и пришлёт счёт №${r.invoice}.</span></div>
+     <div class="done"><b>Заказ №${r.order} на ${rub(r.sum)}</b><span>Менеджер перезвонит, подтвердит наличие и пришлёт счёт №${r.invoice}.</span>${U?'<span>Заказ уже виден в <a href="#account" data-act="close">личном кабинете</a>.</span>':''}</div>
      <button class="btn primary block" data-act="close">Вернуться в каталог</button>`);
   }catch(e){
     if(e.status===400){const err=f.querySelector('.err');modal(checkoutView(e.message));return}
     modal(checkoutView('Не получилось отправить заказ с сайта.'));
   }
+}
+
+
+/* ---------- личный кабинет клиента ---------- */
+const ST_ORD={new:['В обработке','p-warn'],shipped:['Отгружен','p-ok'],cancelled:['Отменён','p-mute']};
+function accountView(){
+  if(!U)return`<div class="wrap acc-wrap"><div class="acc-card">
+   <h2 class="caps">Личный кабинет</h2>
+   <p class="muted" style="margin:0">История заказов, счета и суммы покупок — в одном месте.</p>
+   <div class="seg" role="group" aria-label="Вход или регистрация"><button type="button" data-act="accTab" data-v="login" aria-pressed="${accTab==='login'}">Вход</button><button type="button" data-act="accTab" data-v="reg" aria-pressed="${accTab==='reg'}">Регистрация</button></div>
+   ${accTab==='login'?`<form class="stack" id="uLogin">
+     <label>Почта<input id="u-email" type="email" autocomplete="email" required></label>
+     <label>Пароль<input id="u-pass" type="password" autocomplete="current-password" required></label>
+     <p class="err" id="u-err" hidden></p>
+     <button class="btn primary block" type="submit">Войти</button>
+     <p class="hint">Забыли пароль? Позвоните или напишите нам${owner().phone?` по номеру <a href="tel:+${digits(owner().phone)}">${esc(owner().phone)}</a>`:''} — сбросим и пришлём новый.</p>
+   </form>`:`<form class="stack" id="uReg">
+     <label>Имя *<input id="r-name" type="text" autocomplete="name" required></label>
+     <label>Почта *<input id="r-email" type="email" autocomplete="email" required></label>
+     <label>Телефон *<input id="r-phone" type="tel" autocomplete="tel" placeholder="+7 900 000-00-00" required></label>
+     <div class="fgrid"><label>Организация / ИП<input id="r-company" type="text" autocomplete="organization"></label><label>ИНН<input id="r-inn" type="text" inputmode="numeric"></label></div>
+     <label>Пароль * <span style="font-weight:500">(не меньше 8 символов)</span><input id="r-pass" type="password" autocomplete="new-password" minlength="8" required></label>
+     <p class="err" id="r-err" hidden></p>
+     <button class="btn primary block" type="submit">Зарегистрироваться</button>
+     <p class="hint">Заказы, которые вы уже оформляли на этот номер телефона, появятся в кабинете сами.</p>
+   </form>`}
+  </div></div>`;
+  const m=U.me,t=U.totals,first=(m.name||'').split(' ')[0];
+  return`<div class="wrap acc-wrap wide">
+   <div class="acc-head"><div><span class="tag" style="color:var(--muted)">Личный кабинет</span><h2 class="caps" style="font-size:clamp(26px,4vw,40px);margin-top:10px">Здравствуйте${first?', '+esc(first):''}</h2>
+     <p class="muted" style="margin:6px 0 0">${esc(m.email)}${m.company?' · '+esc(m.company):''}</p></div>
+     <div class="acts"><a class="btn primary" href="#catalog">В каталог</a><button class="btn" data-act="uLogout">Выйти</button></div></div>
+   <div class="tiles">
+    <div class="tile lead"><span class="muted">Куплено всего</span><b class="num">${rub(t.total)}</b></div>
+    <div class="tile"><span class="muted">В ${new Date().getFullYear()} году</span><b class="num">${rub(t.year)}</b></div>
+    <div class="tile"><span class="muted">Заказов</span><b class="num">${t.orders}</b></div>
+    <div class="tile"><span class="muted">Ждёт оплаты</span><b class="num" style="${t.unpaid?'color:var(--warn)':''}">${rub(t.unpaid)}</b></div>
+   </div>
+   <h3 class="acc-sub">История заказов</h3>
+   ${U.orders.length?U.orders.map(o=>{const i=o.invoice,st=ST_ORD[o.status]||['',''];return`<article class="ord">
+     <div class="ord-top"><div><b>Заказ №${o.id}</b> <span class="muted num">от ${dt(o.date)}</span></div>
+      <div class="acts">${i&&i.status!=='cancelled'?(i.status==='paid'?'<span class="pill p-ok">Оплачен</span>':'<span class="pill p-warn">Ждёт оплаты</span>'):''} <span class="pill ${st[1]}">${st[0]}</span></div></div>
+     ${i?`<ul class="ord-items">${i.items.map(x=>`<li><span>${esc(x.name)} <span class="muted mono">${esc(x.sku)}</span></span><span class="num">${x.qty} ${esc(x.unit)} × ${rub(x.price)}</span></li>`).join('')}</ul>`:''}
+     <div class="ord-bot"><b class="num ord-sum">${i?rub(i.sum):''}</b><div class="acts">${i?`<button class="btn small" data-act="uInv" data-id="${o.id}">Счёт №${i.id}</button>`:''}${i?`<button class="btn small primary" data-act="uRepeat" data-id="${o.id}">Повторить заказ</button>`:''}</div></div>
+   </article>`}).join(''):'<div class="ord empty">Заказов пока нет. Выберите товары в <a href="#catalog">каталоге</a> — заказ появится здесь.</div>'}
+   <div class="cols" style="margin-top:28px">
+    <form class="formbox" id="uProfile"><h3>Мои данные</h3>
+     <p class="hint" style="margin:0">Подставляются при оформлении заказа.</p>
+     <label>Имя<input id="p2-name" type="text" value="${esc(m.name)}"></label>
+     <label>Телефон<input id="p2-phone" type="tel" value="${esc(m.phone)}"></label>
+     <div class="fgrid"><label>Организация / ИП<input id="p2-company" type="text" value="${esc(m.company)}"></label><label>ИНН<input id="p2-inn" type="text" inputmode="numeric" value="${esc(m.inn)}"></label></div>
+     <p class="err" id="p2-err" hidden></p>
+     <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+    <form class="formbox" id="uPass"><h3>Сменить пароль</h3>
+     <label>Текущий пароль<input id="pw-old" type="password" autocomplete="current-password" required></label>
+     <label>Новый пароль<input id="pw-new" type="password" autocomplete="new-password" minlength="8" required></label>
+     <p class="err" id="pw-err" hidden></p>
+     <div class="acts"><button class="btn" type="submit">Сменить пароль</button></div></form>
+   </div></div>`;
 }
 
 /* ---------- кабинет ---------- */
@@ -568,7 +655,7 @@ function loginView(){
     <p class="err" id="pin-err" hidden></p>
     <button class="btn primary block" type="submit">Войти</button></form></div>`;
 }
-const TABS=[['summary','Сводка'],['invoices','Счета'],['orders','Заказы'],['stock','Склад'],['receipts','Приходы'],['banks','Банки'],['settings','Настройки']];
+const TABS=[['summary','Сводка'],['invoices','Счета'],['orders','Заказы'],['customers','Клиенты'],['stock','Склад'],['receipts','Приходы'],['banks','Банки'],['settings','Настройки']];
 function adminView(){
   return`<div class="wrap"><div class="tabs" role="tablist">${TABS.map(([k,t])=>`<button role="tab" data-act="tab" data-v="${k}" aria-selected="${tab===k}">${t}</button>`).join('')}
    <button data-act="logout" style="margin-left:auto">Выйти</button></div>
@@ -683,6 +770,16 @@ banks(){
   ${A.txns.map(t=>`<tr><td class="num">${dt(t.date)}</td><td>${esc(B(t.bank_id)?.name)}</td><td>${esc(t.text)}</td><td class="r num ${t.amount>0?'plus':'minus'}">${t.amount>0?'+':'−'}${rub(Math.abs(t.amount))}</td></tr>`).join('')}
   </tbody></table></div>`:'<p class="muted">Операций пока нет. Укажите текущие остатки во вкладке «Настройки».</p>'}`;
 },
+customers(){
+  const list=A.customers||[];
+  return`<div class="panel-head"><h2>Клиенты</h2><span class="muted">${list.length} зарегистрировано</span></div>
+  <p class="note">Клиенты регистрируются на сайте сами (кнопка «Войти» в шапке). Если клиент забыл пароль, нажмите «Сбросить пароль» и передайте ему новый.</p>
+  ${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Клиент</th><th>Почта</th><th>Телефон</th><th class="r">Заказов</th><th class="r">Куплено</th><th class="r">Оплачено</th><th>С нами с</th><th></th></tr></thead><tbody>
+  ${list.map(c=>`<tr><td><b>${esc(c.name)}</b>${c.company?'<div class="muted">'+esc(c.company)+(c.inn?' · ИНН '+esc(c.inn):'')+'</div>':''}</td><td>${esc(c.email)}</td><td class="num"><a href="tel:+${digits(c.phone)}">${esc(c.phone)}</a></td>
+   <td class="r num">${c.orders}</td><td class="r num"><b>${rub(c.total)}</b></td><td class="r num">${rub(c.paid)}</td><td class="num">${dt(c.created)}</td>
+   <td><button class="btn small" data-act="resetCust" data-id="${c.id}">Сбросить пароль</button></td></tr>`).join('')}
+  </tbody></table></div>`:'<p class="muted">Пока никто не зарегистрировался.</p>'}`;
+},
 settings(){
   const o=A.owner,f=(k,l,ph='')=>`<label>${l}<input id="o-${k}" type="text" value="${esc(o[k])}" placeholder="${esc(ph)}"></label>`;
   return`<div class="panel-head"><h2>Настройки</h2></div>
@@ -701,8 +798,7 @@ settings(){
   </div>`;
 }
 };
-function invoiceDoc(i){
-  const o=A.owner;
+function invoiceDoc(i,o=A.owner){
   return`<div class="m-head"><h2 class="caps">Счёт №${i.id}</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
   ${!o.name?'<p class="note">Реквизиты не заполнены. Откройте «Настройки».</p>':''}
   <div class="doc">
@@ -737,6 +833,19 @@ document.addEventListener('click',async e=>{
   else if(a==='checkout'){modal(checkoutView())}
   else if(a==='ck'){ck[t.dataset.k]=v;const keep={};['c-name','c-phone','c-inn','c-comment'].forEach(k=>{if($('#'+k))keep[k]=$('#'+k).value});modal(checkoutView());for(const k in keep)if($('#'+k))$('#'+k).value=keep[k]}
   else if(a==='wa'){const o=owner();window.open(`https://wa.me/${digits(o.phone)}?text=${encodeURIComponent(orderText($('#c-name')?.value.trim(),$('#c-phone')?.value.trim()))}`,'_blank','noopener')}
+  else if(a==='accTab'){accTab=v;$('#app').innerHTML=accountView()}
+  else if(a==='uLogout'){await api('/api/account/logout',{}).catch(()=>{});U=null;updAcc();$('#app').innerHTML=accountView();toast('Вы вышли из кабинета')}
+  else if(a==='uInv'){const o=U.orders.find(x=>x.id==id);if(o&&o.invoice)modal(invoiceDoc(o.invoice,U.owner),true)}
+  else if(a==='uRepeat'){const o=U.orders.find(x=>x.id==id);let n=0,miss=0;
+    for(const x of o.invoice.items){if(C&&C.products.find(p=>p.id==x.product_id)){cart[x.product_id]=(cart[x.product_id]||0)+x.qty;n++}else miss++}
+    saveCart();updCount();location.hash='top';setTimeout(()=>{drawCart();if(miss)toast(`${miss} поз. больше нет в каталоге`)},400)}
+  else if(a==='resetCust'){const k='rc'+id;if(!armed.has(k)){armed.add(k);t.textContent='Точно сбросить?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent='Сбросить пароль'},4000);return}
+    armed.delete(k);try{const r=await api('/api/admin/customers/reset',{id:+id});const c=A.customers.find(x=>x.id==id);
+      modal(`<div class="m-head"><h2 class="caps">Новый пароль</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+       <p style="margin:0">Клиент: <b>${esc(c.name)}</b> (${esc(c.email)})</p>
+       <div class="done"><span class="muted">Временный пароль</span><b class="mono" style="font-size:22px;letter-spacing:.08em;user-select:all">${esc(r.password)}</b></div>
+       <p class="hint">Передайте пароль клиенту. Он войдёт с ним и сможет сменить его в личном кабинете. Пароль показывается один раз.</p>
+       <button class="btn primary block" data-act="close">Готово</button>`)}catch(e){toast(e.message)}}
   else if(a==='tab'){tab=v;$('#app').innerHTML=adminView()}
   else if(a==='logout'){await api('/api/logout',{}).catch(()=>{});A=null;location.hash='top';render()}
   else if(a==='toggle'){const f=$('#'+v);f.hidden=!f.hidden}
@@ -788,6 +897,17 @@ document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target;
   if(f.id==='searchForm'){document.getElementById('catalog').scrollIntoView();return}
   if(f.id==='checkout')return checkout(f);
+  if(f.id==='uLogin'||f.id==='uReg'){
+    const reg=f.id==='uReg',err=reg?'r-err':'u-err',btn=f.querySelector('button[type=submit]');btn.disabled=true;
+    try{
+      if(reg)await api('/api/account/register',{name:$('#r-name').value,email:$('#r-email').value,phone:$('#r-phone').value,company:$('#r-company').value,inn:$('#r-inn').value,password:$('#r-pass').value});
+      else await api('/api/account/login',{email:$('#u-email').value,password:$('#u-pass').value});
+      accTab='login';await loadMe();$('#app').innerHTML=accountView();toast(reg?'Добро пожаловать! Кабинет создан':'Вы вошли');
+    }catch(e){showErr(err,e.message);btn.disabled=false}
+    return;
+  }
+  if(f.id==='uProfile'){try{await api('/api/account/profile',{name:$('#p2-name').value,phone:$('#p2-phone').value,company:$('#p2-company').value,inn:$('#p2-inn').value});await loadMe();$('#app').innerHTML=accountView();toast('Данные сохранены')}catch(e){showErr('p2-err',e.message)}return}
+  if(f.id==='uPass'){try{await api('/api/account/password',{old:$('#pw-old').value,password:$('#pw-new').value});f.reset();toast('Пароль изменён')}catch(e){showErr('pw-err',e.message)}return}
   if(f.id==='gate'){
     try{await api('/api/login',{password:$('#pin').value});A=null;render()}
     catch(err){showErr('pin-err',err.message)}
