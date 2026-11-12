@@ -78,6 +78,13 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw 
 systemctl enable caddy >/dev/null
 systemctl reload caddy || systemctl restart caddy
 
+# короткая команда обновления: mebel-update
+cat > /usr/local/bin/mebel-update <<UPD
+#!/bin/sh
+curl -fsSL https://raw.githubusercontent.com/ahmedpaihaev-blip/mebel-segment/main/install.sh | bash
+UPD
+chmod +x /usr/local/bin/mebel-update
+
 # ежедневная копия базы, хранится 30 дней
 cat > /etc/cron.daily/mebel-segment-backup <<'BK'
 #!/bin/sh
