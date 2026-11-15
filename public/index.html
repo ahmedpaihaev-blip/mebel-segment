@@ -400,7 +400,7 @@ const ICONS={
 const HERO_ART='<img class="hero-photo" src="/hero-hinge.jpg" alt="Петля 3D с доводчиком Mebel Segment" loading="eager">';
 const TICKER=['Доводчик — тихое закрывание','Clip-on без инструмента','Упаковка с крепежом','Опт коробками','3D-регулировка','Счёт для юрлиц и ИП','Также на Ozon'];
 const LOW=10;
-let C=null, A=null, U=undefined, accTab='login', resetToken=new URLSearchParams(location.search).get('reset'), cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup'}, lastOrder=null;
+let C=null, A=null, U=undefined, accTab='login', resetToken=new URLSearchParams(location.search).get('reset'), cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup',pay:'invoice'}, lastOrder=null;
 try{cart=JSON.parse(localStorage.getItem('cart'))||{}}catch(e){}
 const saveCart=()=>{try{localStorage.setItem('cart',JSON.stringify(cart))}catch(e){}};
 
@@ -419,6 +419,25 @@ async function api(url,body){
 }
 const isAdminRoute=()=>location.hash==='#admin'||(location.pathname==='/admin'&&(!location.hash||location.hash==='#'));
 if(resetToken){accTab='reset';history.replaceState(null,'','/#account')}
+let payToken=new URLSearchParams(location.search).get('pay');if(payToken)history.replaceState(null,'','/'+location.hash);
+async function checkPay(){
+  const t=payToken;let tries=0;
+  modal('<div class="m-head"><h2 class="caps">Проверяем оплату…</h2></div><div class="done"><span>Получаем подтверждение от банка. Обычно это пара секунд.</span></div>');
+  while(tries++<15){
+    try{const r=await api('/api/pay/status?t='+encodeURIComponent(t));
+      if(r.paid){U=undefined;modal(`<div class="m-head"><h2 class="caps">Оплата прошла ✅</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+        <div class="done"><b>Заказ №${r.order} оплачен — ${rub(r.sum)}</b><span>Спасибо! Мы соберём заказ и свяжемся с вами. Чек придёт на почту или телефон.</span></div>
+        <button class="btn primary block" data-act="close">Отлично</button>`);return}
+      if(r.status==='canceled'){modal(`<div class="m-head"><h2 class="caps">Оплата не прошла</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+        <div class="done"><b>Заказ №${r.order} сохранён, но не оплачен</b><span>Платёж отменён или не завершён. Можно попробовать ещё раз или оплатить по счёту.</span></div>
+        <button class="btn primary block" data-act="payRetry" data-t="${esc(t)}">Попробовать ещё раз</button><button class="btn block" data-act="close">Оплачу по счёту</button>`);return}
+    }catch(e){if(e.status===404)break}
+    await new Promise(ok=>setTimeout(ok,2000));
+  }
+  modal(`<div class="m-head"><h2 class="caps">Ждём подтверждения</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+   <div class="done"><span>Банк ещё не подтвердил оплату. Если деньги списались — всё в порядке, статус обновится в течение нескольких минут.</span></div>
+   <button class="btn primary block" data-act="payRetry" data-t="${esc(t)}">Оплатить ещё раз</button><button class="btn block" data-act="close">Закрыть</button>`);
+}
 const isAccountRoute=()=>location.hash==='#account';
 async function loadMe(){try{U=await api('/api/account/me')}catch(e){U=null}updAcc()}
 function updAcc(){$('#accTxt').textContent=U?'Кабинет':'Войти';$('#accBtn').classList.toggle('on',!!U)}
@@ -606,9 +625,11 @@ function checkoutView(errMsg){
    ${ck.kind==='company'?`<label>ИНН<input id="c-inn" type="text" inputmode="numeric" value="${v('c-inn',me?me.inn:'')}"></label>`:''}
    <div class="seg" role="group" aria-label="Получение"><button type="button" data-act="ck" data-k="delivery" data-v="pickup" aria-pressed="${ck.delivery==='pickup'}">Самовывоз</button><button type="button" data-act="ck" data-k="delivery" data-v="delivery" aria-pressed="${ck.delivery==='delivery'}">Доставка</button></div>
    <label>${ck.delivery==='delivery'?'Адрес доставки и комментарий':'Комментарий'}<textarea id="c-comment" rows="3">${v('c-comment')}</textarea></label>
+   ${C&&C.online?`<div class="seg" role="group" aria-label="Оплата"><button type="button" data-act="ck" data-k="pay" data-v="invoice" aria-pressed="${ck.pay==='invoice'}">По счёту</button><button type="button" data-act="ck" data-k="pay" data-v="online" aria-pressed="${ck.pay==='online'}">Онлайн: карта, СБП</button></div>
+   ${ck.pay==='online'?'<p class="hint" style="margin:0">После нажатия «Отправить заказ и оплатить» откроется защищённая страница ЮKassa для оплаты картой, по СБП или SberPay.</p>':''}`:''}
    <div class="total"><span class="muted">${n} ${n===1?'позиция':n<5?'позиции':'позиций'}</span><b class="num">${rub(cartSum())}</b></div>
    ${errMsg?`<p class="err">${esc(errMsg)}${wa?` Нажмите «Отправить в WhatsApp» или позвоните ${esc(o.phone)}.`:''}</p>`:''}
-   <button class="btn primary block" type="submit">Отправить заказ</button>
+   <button class="btn primary block" type="submit">${C&&C.online&&ck.pay==='online'?'Отправить заказ и оплатить':'Отправить заказ'}</button>
    ${wa?`<button class="btn block" type="button" data-act="wa">Отправить в WhatsApp</button>`:''}
    <p class="hint">${me?`Заказ сохранится в вашем личном кабинете (${esc(me.email)}).`:'<a href="#account" data-act="close">Войдите или зарегистрируйтесь</a>, чтобы видеть историю заказов.'}</p>
    <p class="hint">Нажимая «Отправить», вы соглашаетесь на обработку контактных данных для связи по заказу.</p>
@@ -618,11 +639,13 @@ function modal(html,wide){$('#layer').innerHTML=`<div class="veil" data-act="clo
 async function checkout(f){
   const btn=f.querySelector('button[type=submit]');btn.disabled=true;
   try{
-    const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn')?.value||'',comment:$('#c-comment').value,kind:ck.kind,delivery:ck.delivery,
+    const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn')?.value||'',comment:$('#c-comment').value,kind:ck.kind,delivery:ck.delivery,pay:C&&C.online?ck.pay:'invoice',
       items:cartIds().map(id=>({pid:+id,qty:cart[id]}))});
-    lastOrder=r;cart={};saveCart();C=null;A=null;if(U)U=undefined;await render();
+    lastOrder=r;cart={};saveCart();
+    if(r.pay_url){modal('<div class="m-head"><h2 class="caps">Переходим к оплате…</h2></div><div class="done"><b>Заказ №'+r.order+' принят</b><span>Сейчас откроется страница оплаты ЮKassa.</span></div>');location.href=r.pay_url;return}
+    C=null;A=null;if(U)U=undefined;await render();
     modal(`<div class="m-head"><h2 class="caps">Заказ принят</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
-     <div class="done"><b>Заказ №${r.order} на ${rub(r.sum)}</b><span>Менеджер перезвонит, подтвердит наличие и пришлёт счёт №${r.invoice}.</span>${U?'<span>Заказ уже виден в <a href="#account" data-act="close">личном кабинете</a>.</span>':''}</div>
+     <div class="done"><b>Заказ №${r.order} на ${rub(r.sum)}</b><span>Менеджер перезвонит, подтвердит наличие и пришлёт счёт №${r.invoice}.</span>${r.pay_error?`<span class="err">${esc(r.pay_error)}</span>`:''}${U?'<span>Заказ уже виден в <a href="#account" data-act="close">личном кабинете</a>.</span>':''}</div>
      <button class="btn primary block" data-act="close">Вернуться в каталог</button>`);
   }catch(e){
     if(e.status===400){const err=f.querySelector('.err');modal(checkoutView(e.message));return}
@@ -682,7 +705,7 @@ function accountView(){
      <div class="ord-top"><div><b>Заказ №${o.id}</b> <span class="muted num">от ${dt(o.date)}</span></div>
       <div class="acts">${i&&i.status!=='cancelled'?(i.status==='paid'?'<span class="pill p-ok">Оплачен</span>':'<span class="pill p-warn">Ждёт оплаты</span>'):''} <span class="pill ${st[1]}">${st[0]}</span></div></div>
      ${i?`<ul class="ord-items">${i.items.map(x=>`<li><span>${esc(x.name)} <span class="muted mono">${esc(x.sku)}</span></span><span class="num">${x.qty} ${esc(x.unit)} × ${rub(x.price)}</span></li>`).join('')}</ul>`:''}
-     <div class="ord-bot"><b class="num ord-sum">${i?rub(i.sum):''}</b><div class="acts">${i?`<button class="btn small" data-act="uInv" data-id="${o.id}">Счёт №${i.id}</button>`:''}${i?`<button class="btn small primary" data-act="uRepeat" data-id="${o.id}">Повторить заказ</button>`:''}</div></div>
+     <div class="ord-bot"><b class="num ord-sum">${i?rub(i.sum):''}</b><div class="acts">${i?`<button class="btn small" data-act="uInv" data-id="${o.id}">Счёт №${i.id}</button>`:''}${i&&i.status==='issued'&&U.online?`<button class="btn small primary" data-act="uPay" data-id="${i.id}">Оплатить онлайн</button>`:''}${i?`<button class="btn small ${i&&i.status==='issued'&&U.online?'':'primary'}" data-act="uRepeat" data-id="${o.id}">Повторить заказ</button>`:''}</div></div>
    </article>`}).join(''):'<div class="ord empty">Заказов пока нет. Выберите товары в <a href="#catalog">каталоге</a> — заказ появится здесь.</div>'}
    <div class="cols" style="margin-top:28px">
     <form class="formbox" id="uProfile"><h3>Мои данные</h3>
@@ -842,6 +865,7 @@ settings(){
    ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
    ${f('phone','Телефон на сайте и WhatsApp','+7 900 000-00-00')}${f('email','Почта на сайте')}</div>
    <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+  ${ykBox()}
   ${mailBox()}
   ${tgBox()}
   <div class="formbox"><h3>Банки и текущие остатки</h3>
@@ -854,6 +878,29 @@ settings(){
   </div>`;
 }
 };
+function ykBox(edit){
+  const y=A.yk,hook=location.origin+'/api/yookassa/webhook';
+  if(y&&!edit)return`<div class="formbox" id="ykBox"><h3>Онлайн-оплата ЮKassa ${y.test?'<span class="pill p-warn">Тестовый режим</span>':'<span class="pill p-ok">Работает</span>'}</h3>
+   <p style="margin:0">Магазин <b>${esc(y.shop_id)}</b>. Оплаченные онлайн счета отмечаются сами и записываются в банк «${esc((A.banks.find(b=>b.id==y.bank)||A.banks[0]||{}).name||'—')}». Данные для чеков: ${y.receipt?'отправляются':'не отправляются'}.</p>
+   ${y.test?'<p class="note">Тестовый режим: настоящие деньги не списываются. Для проверки используйте тестовую карту 5555 5555 5555 4477, срок — любой будущий, CVC — любые 3 цифры. Когда ЮKassa одобрит магазин, нажмите «Изменить» и вставьте боевой ключ (live_…).</p>':''}
+   <p class="hint" style="margin:0">Адрес для HTTP-уведомлений в ЮKassa: <span class="mono">${esc(hook)}</span> <button class="rm" data-act="copyHook">скопировать</button></p>
+   <div class="acts"><button class="btn" data-act="ykEdit">Изменить</button><button class="btn danger" data-act="ykOff">Отключить</button></div></div>`;
+  return`<form class="formbox" id="ykForm"><h3>Онлайн-оплата ЮKassa</h3>
+   <p class="hint" style="margin:0">Покупатели смогут оплатить заказ картой, по СБП или SberPay. Деньги приходят на ваш расчётный счёт, ЮKassa берёт комиссию по своему тарифу.</p>
+   <ol class="steps-list">
+    <li>Подайте заявку на <a href="https://yookassa.ru" target="_blank" rel="noopener">yookassa.ru</a> как ИП. Пока её проверяют, можно создать <b>тестовый магазин</b> в том же личном кабинете.</li>
+    <li>В личном кабинете ЮKassa: <b>«Интеграция» → «Ключи API»</b> — там <b>shopId</b> (число) и <b>секретный ключ</b> (начинается с <span class="mono">live_</span> или <span class="mono">test_</span>).</li>
+    <li>Там же <b>«Интеграция» → «HTTP-уведомления»</b>: вставьте адрес <span class="mono">${esc(hook)}</span> <button type="button" class="rm" data-act="copyHook">скопировать</button> и отметьте события <i>payment.succeeded</i> и <i>payment.canceled</i>.</li>
+   </ol>
+   <div class="fgrid">
+    <label>shopId<input id="yk-shop" type="text" inputmode="numeric" autocomplete="off" value="${esc(y&&y.shop_id||'')}" placeholder="123456"></label>
+    <label>Секретный ключ<input id="yk-secret" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="${y?'оставьте пустым, чтобы не менять':'live_… или test_…'}"></label>
+    <label>Куда приходят деньги<select id="yk-bank">${A.banks.map(b=>`<option value="${b.id}"${y&&y.bank==b.id?' selected':''}>${esc(b.name)}</option>`).join('')}</select></label>
+   </div>
+   <label class="radio"><input type="checkbox" id="yk-receipt" ${y&&y.receipt?'checked':''}> <span>Передавать данные для чеков (54-ФЗ). Включайте, если в ЮKassa подключены «Чеки от ЮKassa» или онлайн-касса.</span></label>
+   <p class="err" id="yk-err" hidden></p>
+   <div class="acts"><button class="btn primary" type="submit">Подключить</button>${y?'<button type="button" class="btn" data-act="ykCancel">Отмена</button>':''}</div></form>`;
+}
 const MAIL_PRESETS={'smtp.yandex.ru':['Яндекс Почта','id.yandex.ru → «Безопасность» → «Пароли приложений» → «Почта»','https://id.yandex.ru/security/app-passwords'],
  'smtp.mail.ru':['Mail.ru','Почта → «Настройки» → «Безопасность» → «Пароли для внешних приложений»','https://account.mail.ru/user/2-step-auth/passwords/'],
  'smtp.gmail.com':['Gmail','сначала включите двухэтапную аутентификацию, затем myaccount.google.com/apppasswords','https://myaccount.google.com/apppasswords']};
@@ -943,6 +990,13 @@ document.addEventListener('click',async e=>{
        <div class="done"><span class="muted">Временный пароль</span><b class="mono" style="font-size:22px;letter-spacing:.08em;user-select:all">${esc(r.password)}</b></div>
        <p class="hint">Передайте пароль клиенту. Он войдёт с ним и сможет сменить его в личном кабинете. Пароль показывается один раз.</p>
        <button class="btn primary block" data-act="close">Готово</button>`)}catch(e){toast(e.message)}}
+  else if(a==='uPay'||a==='payRetry'){t.disabled=true;
+    try{const r=a==='uPay'?await api('/api/pay/start',{invoice:+id}):await api('/api/pay/retry',{t:t.dataset.t});location.href=r.pay_url}
+    catch(e){t.disabled=false;toast(e.message)}}
+  else if(a==='ykOff'){const k='ykoff';if(!armed.has(k)){armed.add(k);t.textContent='Точно?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent='Отключить'},4000);return}armed.delete(k);act('/api/admin/yookassa/off',{},'Онлайн-оплата отключена')}
+  else if(a==='ykEdit'){$('#ykBox').outerHTML=ykBox(true)}
+  else if(a==='ykCancel'){$('#ykForm').outerHTML=ykBox()}
+  else if(a==='copyHook'){const v=location.origin+'/api/yookassa/webhook';navigator.clipboard.writeText(v).then(()=>toast('Адрес скопирован'),()=>toast(v))}
   else if(a==='mailPreset'){mailHost=v;if(A.mail)A.mail.host=v;const keep={u:$('#m-user')?.value,t:$('#m-to')?.value};$('#mailForm').outerHTML=mailBox(true);if(keep.u)$('#m-user').value=keep.u;if(keep.t)$('#m-to').value=keep.t}
   else if(a==='mailEdit'){$('#mailBox').outerHTML=mailBox(true)}
   else if(a==='mailCancel'){$('#mailForm').outerHTML=mailBox()}
@@ -1029,6 +1083,8 @@ document.addEventListener('submit',async e=>{
   else if(f.id==='pForm')run('p-err','/api/admin/products',{id:$('#p-id').value||undefined,sku:$('#p-sku').value,name:$('#p-name').value,cat:$('#p-cat').value,unit:$('#p-unit').value,price:$('#p-price').value,box:$('#p-box').value,descr:$('#p-descr').value},'Товар сохранён');
   else if(f.id==='rForm')run('r-err','/api/admin/receipts',{supplier:$('#r-sup').value,bank:$('#r-bank').value,items:readLines('r-lines',true)},'Приход проведён, остатки увеличены');
   else if(f.id==='tForm')run('t-err','/api/admin/txns',{bank:$('#t-bank').value,text:$('#t-text').value,amount:$('#t-amount').value},'Операция добавлена');
+  else if(f.id==='ykForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;
+    run('yk-err','/api/admin/yookassa',{shop_id:$('#yk-shop').value,secret:$('#yk-secret').value,bank:$('#yk-bank').value,receipt:$('#yk-receipt').checked},'ЮKassa подключена').finally(()=>{if(btn.isConnected)btn.disabled=false})}
   else if(f.id==='mailForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;btn.textContent='Отправляю проверку…';
     run('m-err','/api/admin/mail',{host:$('#m-host').value.trim(),port:$('#m-port').value,user:$('#m-user').value.trim(),pass:$('#m-pass').value,to:$('#m-to').value.trim()},'Почта подключена — проверьте входящие')
       .finally(()=>{if(btn.isConnected){btn.disabled=false;btn.textContent='Подключить и отправить проверку'}})}
@@ -1056,6 +1112,7 @@ document.addEventListener('submit',async e=>{
   setTimeout(close,3600);
 })();
 render();
+if(payToken)checkPay();
 </script>
 </body>
 </html>

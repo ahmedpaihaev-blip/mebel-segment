@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, email TEXT NOT NUL
   phone TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', inn TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, kind TEXT NOT NULL, customer_id INTEGER, exp INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS resets (token TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, exp INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
+  status TEXT NOT NULL, created TEXT NOT NULL, url TEXT);
 `);
 for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
@@ -173,6 +175,7 @@ function adminState() {
   const recItems = db.prepare('SELECT ri.*, p.sku, p.name FROM receipt_items ri JOIN products p ON p.id = ri.product_id WHERE receipt_id = ?');
   return {
     owner: getOwner(),
+    yk: (y => y ? { shop_id: y.shop_id, test: !!y.test, bank: y.bank, receipt: !!y.receipt } : null)(ykCfg()),
     mail: (m => m ? { host: m.host, port: m.port, user: m.user, to: m.to || '', ok: !!m.pass } : null)(getSetting('mail')),
     tg: (t => t ? { bot: t.bot || '', linked: !!t.chat_id, chat: t.chat_name || '' } : null)(getSetting('tg')),
     cats: CATS,
@@ -301,14 +304,81 @@ function notifyOrder(orderId) {
   notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Новый заказ №${o.id} на ${rubs(inv ? inv.sum : 0)} — ${o.client}`);
 }
 
+
+/* ---------- онлайн-оплата: ЮKassa ---------- */
+const ykCfg = () => { const y = getSetting('yk'); return y && y.shop_id && y.secret ? y : null; };
+async function ykApi(cfg, method, pth, body) {
+  let r;
+  try {
+    r = await fetch(`${process.env.YK_API || 'https://api.yookassa.ru'}/v3${pth}`, { method, signal: AbortSignal.timeout(15000),
+      headers: { Authorization: 'Basic ' + Buffer.from(`${cfg.shop_id}:${cfg.secret}`).toString('base64'), 'Content-Type': 'application/json',
+        ...(method === 'POST' ? { 'Idempotence-Key': crypto.randomUUID() } : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+  } catch (e) { throw new Error('нет связи с ЮKassa (' + ((e.cause && e.cause.code) || e.message) + ')'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(r.status === 401 ? 'ЮKassa не приняла shopId или секретный ключ' : (j.description || `ЮKassa ответила ${r.status}`));
+  return j;
+}
+async function startPayment(invoiceId) {
+  const cfg = ykCfg(); if (!cfg) throw new UserError('Онлайн-оплата пока не подключена. Оплатите по счёту.');
+  const [inv] = invoiceRows('WHERE id = ?', invoiceId);
+  if (!inv) throw new UserError('Счёт не найден.', 404);
+  if (inv.status !== 'issued') throw new UserError(inv.status === 'paid' ? 'Этот заказ уже оплачен.' : 'Этот счёт отменён.');
+  const o = inv.order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(inv.order_id) : null;
+  const c = o && o.customer_id ? db.prepare('SELECT email FROM customers WHERE id = ?').get(o.customer_id) : null;
+  const token = crypto.randomBytes(16).toString('hex');
+  const body = {
+    amount: { value: inv.sum.toFixed(2), currency: 'RUB' }, capture: true,
+    confirmation: { type: 'redirect', return_url: `${SITE_URL}/?pay=${token}` },
+    description: `Заказ №${o ? o.id : inv.id} на mebel-segment.ru`.slice(0, 128),
+    metadata: { invoice_id: String(inv.id), order_id: String(o ? o.id : '') },
+  };
+  if (cfg.receipt) { // данные для чека по 54-ФЗ («Чеки от ЮKassa» или подключённая касса)
+    const ph = digits(o && o.phone);
+    body.receipt = { customer: c ? { email: c.email } : ph.length === 11 ? { phone: ph } : {},
+      items: inv.items.map(x => ({ description: x.name.slice(0, 128), quantity: String(x.qty), amount: { value: x.price.toFixed(2), currency: 'RUB' },
+        vat_code: 1, payment_mode: 'full_payment', payment_subject: 'commodity' })) };
+  }
+  const p = await ykApi(cfg, 'POST', '/payments', body);
+  const url = p.confirmation && p.confirmation.confirmation_url;
+  if (!url) throw new Error('ЮKassa не вернула ссылку на оплату');
+  db.prepare('INSERT INTO payments (id, invoice_id, token, amount, status, created, url) VALUES (?, ?, ?, ?, ?, ?, ?)').run(p.id, inv.id, token, inv.sum, p.status, now(), url);
+  return url;
+}
+// статус всегда берём у самой ЮKassa: уведомлению без проверки не доверяем
+async function syncPayment(id) {
+  const cfg = ykCfg(); const row = db.prepare('SELECT * FROM payments WHERE id = ?').get(String(id));
+  if (!cfg || !row) return null;
+  const p = await ykApi(cfg, 'GET', '/payments/' + encodeURIComponent(row.id));
+  db.prepare('UPDATE payments SET status = ? WHERE id = ?').run(p.status, row.id);
+  if (p.status === 'succeeded' && p.paid) {
+    const done = tx(() => {
+      const inv = db.prepare('SELECT * FROM invoices WHERE id = ?').get(row.invoice_id);
+      if (!inv || inv.status !== 'issued') return null;
+      const bank = db.prepare('SELECT * FROM banks WHERE id = ?').get(cfg.bank) || db.prepare('SELECT * FROM banks ORDER BY id LIMIT 1').get();
+      const amount = r2(Number(p.amount.value));
+      db.prepare("UPDATE invoices SET status = 'paid', paid_bank = ? WHERE id = ?").run(bank ? bank.id : null, inv.id);
+      if (bank) {
+        db.prepare('UPDATE banks SET balance = round(balance + ?, 2) WHERE id = ?').run(amount, bank.id);
+        db.prepare('INSERT INTO txns (date, bank_id, text, amount) VALUES (?, ?, ?, ?)').run(now(), bank.id, `Онлайн-оплата ЮKassa по счёту №${inv.id}, ${inv.client}`, amount);
+      }
+      return { inv, amount };
+    });
+    if (done) notify(`💳 <b>Оплачен онлайн заказ${done.inv.order_id ? ' №' + done.inv.order_id : ''}</b> — <b>${rubs(done.amount)}</b>\n👤 ${h(done.inv.client)}\nСчёт №${done.inv.id} отмечен оплаченным.`,
+      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачен онлайн: ${rubs(done.amount)} — ${done.inv.client}`);
+  }
+  return p.status;
+}
+
 /* ---------- маршруты ---------- */
 const routes = {
   'GET /api/catalog': () => ({
     cats: CATS,
     owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
+    online: !!ykCfg(),
     products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo, box, descr FROM products WHERE active = 1 ORDER BY id').all(),
   }),
-  'POST /api/orders': (b, req) => { const r = tx(() => {
+  'POST /api/orders': async (b, req) => { const r = tx(() => {
     const me = customerOf(req);
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
     if (!client || phone.replace(/\D/g, '').length < 10) throw new UserError('Укажите имя и телефон из 10–11 цифр.');
@@ -319,7 +389,36 @@ const routes = {
     const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id) VALUES (?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
-  }); notifyOrder(r.order); return r; },
+  }); notifyOrder(r.order);
+    if (b.pay === 'online' && ykCfg()) {
+      try { r.pay_url = await startPayment(r.invoice); }
+      catch (e) { console.error('ЮKassa:', e.message); r.pay_error = 'Не получилось перейти к онлайн-оплате. Заказ принят — мы пришлём счёт.'; }
+    }
+    return r; },
+  'POST /api/pay/start': async (b, req) => {
+    const me = customerOf(req); if (!me) throw new UserError('Войдите в личный кабинет.', 401);
+    const inv = db.prepare('SELECT i.id FROM invoices i JOIN orders o ON o.id = i.order_id WHERE i.id = ? AND o.customer_id = ?').get(posInt(b.invoice), me.id);
+    if (!inv) throw new UserError('Счёт не найден.', 404);
+    try { return { pay_url: await startPayment(inv.id) }; } catch (e) { if (e instanceof UserError) throw e; throw new UserError('Не получилось начать оплату: ' + e.message + '.'); }
+  },
+  'GET /api/pay/status': async (b, req, res, url) => {
+    const row = db.prepare('SELECT * FROM payments WHERE token = ?').get(str(url.searchParams.get('t'), 64));
+    if (!row) throw new UserError('Платёж не найден.', 404);
+    let status = row.status;
+    try { status = (await syncPayment(row.id)) || status; } catch (e) { console.error('ЮKassa:', e.message); }
+    const inv = db.prepare('SELECT * FROM invoices WHERE id = ?').get(row.invoice_id);
+    return { status, paid: inv.status === 'paid', order: inv.order_id, invoice: inv.id, sum: row.amount };
+  },
+  'POST /api/pay/retry': async (b) => {
+    const row = db.prepare('SELECT * FROM payments WHERE token = ?').get(str(b.t, 64));
+    if (!row) throw new UserError('Платёж не найден.', 404);
+    try { return { pay_url: await startPayment(row.invoice_id) }; } catch (e) { if (e instanceof UserError) throw e; throw new UserError('Не получилось начать оплату: ' + e.message + '.'); }
+  },
+  'POST /api/yookassa/webhook': async (b) => {
+    const id = b && b.object && b.object.id;
+    if (id) { try { await syncPayment(String(id)); } catch (e) { console.error('ЮKassa webhook:', e.message); } }
+    return { ok: true };
+  },
   'POST /api/login': (b, req, res) => {
     const lim = tooMany(req, 'admin:');
     if (!ADMIN_PASSWORD || !safeEqual(str(b.password, 200), ADMIN_PASSWORD)) { lim.fail(); throw new UserError('Неверный пароль.', 401); }
@@ -360,7 +459,7 @@ const routes = {
     const year = String(new Date().getFullYear());
     const o = getOwner();
     return {
-      me: publicCustomer(c), orders: list,
+      me: publicCustomer(c), orders: list, online: !!ykCfg(),
       totals: { orders: live.length, total: r2(live.reduce((s, x) => s + x.invoice.sum, 0)),
         year: r2(live.filter(x => x.date.startsWith(year)).reduce((s, x) => s + x.invoice.sum, 0)),
         unpaid: r2(live.filter(x => x.invoice.status === 'issued').reduce((s, x) => s + x.invoice.sum, 0)) },
@@ -567,6 +666,18 @@ const routes = {
     setSetting('mail', m);
     return { ok: true };
   },
+  'POST /api/admin/yookassa': async (b) => {
+    const old = getSetting('yk') || {};
+    const cfg = { shop_id: str(b.shop_id, 20).replace(/\D/g, ''), secret: str(b.secret, 100).replace(/\s+/g, '') || old.secret || '',
+      bank: posInt(b.bank) || null, receipt: !!b.receipt };
+    if (!cfg.shop_id) throw new UserError('Укажите shopId — число из настроек магазина в ЮKassa.');
+    if (!/^(test|live)_[\w-]{10,}$/.test(cfg.secret)) throw new UserError('Секретный ключ начинается с live_ или test_. Скопируйте его целиком из раздела «Интеграция → Ключи API».');
+    let me; try { me = await ykApi(cfg, 'GET', '/me'); } catch (e) { throw new UserError('Не получилось подключить: ' + e.message + '.'); }
+    cfg.test = !!me.test || cfg.secret.startsWith('test_');
+    setSetting('yk', cfg);
+    return { test: cfg.test };
+  },
+  'POST /api/admin/yookassa/off': () => { db.prepare("DELETE FROM settings WHERE key = 'yk'").run(); return { ok: true }; },
   'POST /api/admin/mail/off': () => { db.prepare("DELETE FROM settings WHERE key = 'mail'").run(); return { ok: true }; },
   'POST /api/admin/telegram/off': () => { db.prepare("DELETE FROM settings WHERE key = 'tg'").run(); return { ok: true }; },
   'POST /api/admin/owner': (b) => {
@@ -645,10 +756,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST') {
       // защита от отправки форм с чужих сайтов
       const origin = req.headers.origin;
-      if (origin && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
+      if (origin && key !== 'POST /api/yookassa/webhook' && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
     }
     const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/admin/products/photo' ? 12 * 1024 * 1024 : 256 * 1024) : {};
-    send(res, 200, await handler(body, req, res));
+    send(res, 200, await handler(body, req, res, url));
   } catch (e) {
     if (e instanceof UserError) return send(res, e.code, { error: e.message });
     console.error(e);
