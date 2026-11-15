@@ -840,6 +840,12 @@ receipts(){
 banks(){
   return`<div class="panel-head"><h2>Банки</h2></div>
   <div class="tiles">${A.banks.map(b=>`<div class="tile"><span class="muted">${esc(b.name)}${b.acc?' · р/с <span class="mono">'+esc(b.acc)+'</span>':''}</span><b class="num">${rub(b.balance)}</b></div>`).join('')}</div>
+  <form class="formbox" id="stForm"><h3>Загрузить выписку из банка</h3>
+   <p class="hint" style="margin:0">В интернет-банке: <b>«Выписка»</b> → период (например, с начала месяца) → <b>«Экспорт»</b> или «Скачать» → формат <b>«1С»</b> (файл .txt, обычно <span class="mono">kl_to_1c.txt</span>). Работает с Альфа-Банком, Сбербанком, Россельхозбанком и любым другим банком.</p>
+   <div class="inline-form" style="grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto"><label>Банк<select id="st-bank"><option value="">Определить по номеру счёта</option>${A.banks.map(b=>`<option value="${b.id}">${esc(b.name)}${b.acc?' …'+esc(b.acc):''}</option>`).join('')}</select></label>
+   <label>Файл выписки<input id="st-file" type="file" accept=".txt,text/plain"></label><button class="btn primary" type="submit">Загрузить</button></div>
+   <p class="hint" style="margin:0">Повторы пропускаются — одну и ту же выписку можно загружать сколько угодно раз. Остаток на счёте станет как в банке. Поступления по вашим счетам (в назначении «по счёту № …» или с ИНН клиента на точную сумму) отметятся оплаченными сами.</p>
+   <p class="err" id="st-err" hidden></p></form>
   <form class="formbox" id="tForm"><h3>Добавить операцию вручную</h3>
    <div class="inline-form"><label>Банк<select id="t-bank">${A.banks.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></label>
    <label>Назначение<input id="t-text" type="text" placeholder="Аренда склада"></label>
@@ -1115,6 +1121,17 @@ document.addEventListener('submit',async e=>{
     try{await api('/api/admin/invoices/send',{id:+f.dataset.id,kind,email:$('#sd-email').value});closeLayer();await reload(kind==='waybill'?'Накладная отправлена':'Счёт отправлен')}
     catch(err){showErr('sd-err',err.message);btn.disabled=false;btn.textContent='Отправить'}}
   else if(f.id==='bkForm'){run('bk-err','/api/admin/backup',{daily:$('#bk-daily').checked},'Сохранено')}
+  else if(f.id==='stForm'){const file=$('#st-file').files[0];if(!file)return showErr('st-err','Выберите файл выписки.');
+    const btn=f.querySelector('button[type=submit]');btn.disabled=true;btn.textContent='Загружаю…';
+    try{const data=await new Promise((ok,bad)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=()=>bad(new Error('Не удалось прочитать файл'));r.readAsDataURL(file)});
+      const r=await api('/api/admin/statement',{bank:$('#st-bank').value,data:data.replace(/^data:[^;]*;/,'data:text/plain;')});await reload();
+      modal(`<div class="m-head"><h2 class="caps">Выписка загружена</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+       <div class="done"><b>${esc(r.bank)}${r.from?` · ${esc(r.from)} — ${esc(r.to||'')}`:''}</b>
+        <span>Новых операций: <b>${r.added}</b>${r.skipped?` · уже были загружены: ${r.skipped}`:''}</span>
+        ${r.balance!==null?`<span>Остаток на счёте: <b class="num">${rub(r.balance)}</b></span>`:''}</div>
+       ${r.paid.length?`<div class="note"><b>Отмечены оплаченными:</b><br>${r.paid.map(p=>`Счёт №${p.id} — ${esc(p.client)} — ${rub(p.sum)}`).join('<br>')}</div>`:''}
+       <button class="btn primary block" data-act="close">Готово</button>`)}
+    catch(err){showErr('st-err',err.message);btn.disabled=false;btn.textContent='Загрузить'}}
   else if(f.id==='docsForm'){run(null,'/api/admin/docs',{autoInvoice:$('#d-inv').checked,autoWaybill:$('#d-way').checked},'Сохранено')}
   else if(f.id==='ykForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;
     run('yk-err','/api/admin/yookassa',{shop_id:$('#yk-shop').value,secret:$('#yk-secret').value,bank:$('#yk-bank').value,receipt:$('#yk-receipt').checked},'ЮKassa подключена').finally(()=>{if(btn.isConnected)btn.disabled=false})}

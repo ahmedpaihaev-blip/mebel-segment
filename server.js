@@ -41,9 +41,10 @@ CREATE TABLE IF NOT EXISTS resets (token TEXT PRIMARY KEY, customer_id INTEGER N
 CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
   status TEXT NOT NULL, created TEXT NOT NULL, url TEXT);
 `);
-for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER'], ['invoices', 'email', 'TEXT'], ['invoices', 'shipped_at', 'TEXT']]) {
+for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER'], ['invoices', 'email', 'TEXT'], ['invoices', 'shipped_at', 'TEXT'], ['txns', 'ext_id', 'TEXT']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
 }
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS txns_ext ON txns (bank_id, ext_id) WHERE ext_id IS NOT NULL');
 const UPLOADS = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOADS, { recursive: true });
 
@@ -542,6 +543,83 @@ setInterval(() => {
   } catch (e) { console.error('Копия базы:', e.message); }
 }, 10 * 60 * 1000).unref();
 
+
+/* ---------- загрузка банковской выписки (формат 1С: 1CClientBankExchange) ---------- */
+function parse1C(buf) {
+  let text = buf.toString('utf8');
+  if (!text.startsWith('﻿1CClientBankExchange') && !text.startsWith('1CClientBankExchange') || /Кодировка=Windows/i.test(new TextDecoder('windows-1251').decode(buf.subarray(0, 300))))
+    text = new TextDecoder('windows-1251').decode(buf);
+  text = text.replace(/^﻿/, '');
+  if (!text.startsWith('1CClientBankExchange')) throw new UserError('Это не выписка в формате 1С. В интернет-банке выберите «Экспорт в 1С» (файл обычно kl_to_1c.txt).');
+  const accounts = [], docs = [], headAccs = []; let cur = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim(); if (!line) continue;
+    const i = line.indexOf('='), k = i > 0 ? line.slice(0, i) : line, v = i > 0 ? line.slice(i + 1).trim() : '';
+    if (k === 'СекцияРасчСчет') { cur = {}; accounts.push(cur); continue; }
+    if (k === 'СекцияДокумент') { cur = { _type: v }; docs.push(cur); continue; }
+    if (k === 'КонецРасчСчет' || k === 'КонецДокумента') { cur = null; continue; }
+    if (cur && i > 0) cur[k] = cur[k] ? cur[k] + ' ' + v : v;
+    else if (!cur && k === 'РасчСчет') headAccs.push(v);
+  }
+  if (!accounts.length) for (const v of headAccs) accounts.push({ РасчСчет: v });
+  return { accounts, docs };
+}
+const num1C = v => { const t = String(v ?? '').replace(/\s/g, '').replace(',', '.'); if (!t) return NaN; const n = Number(t); return Number.isFinite(n) ? r2(n) : NaN; };
+const date1C = v => { const m = String(v || '').match(/(\d{2})\.(\d{2})\.(\d{4})/); return m ? `${m[3]}-${m[2]}-${m[1]}T12:00:00.000Z` : null; };
+function importStatement(buf, bankId) {
+  const { accounts, docs } = parse1C(buf);
+  const ourAccs = new Set(accounts.map(a => (a.РасчСчет || '').replace(/\D/g, '')).filter(Boolean));
+  const banks = db.prepare('SELECT * FROM banks').all();
+  let bank = banks.find(b => b.id === posInt(bankId));
+  if (!bank) bank = banks.find(b => b.acc && [...ourAccs].some(a => a.endsWith(b.acc.replace(/\D/g, ''))));
+  if (!bank) throw new UserError('Выберите, в какой банк загрузить выписку.');
+  const acc = [...ourAccs].find(a => bank.acc && a.endsWith(bank.acc.replace(/\D/g, ''))) || [...ourAccs][0] || '';
+  const res = { bank: bank.name, added: 0, skipped: 0, paid: [], balance: null, from: null, to: null };
+  const ins = db.prepare('INSERT OR IGNORE INTO txns (date, bank_id, text, amount, ext_id) VALUES (?, ?, ?, ?, ?)');
+  const issued = db.prepare("SELECT * FROM invoices WHERE status = 'issued'").all();
+  const sumOf = id => r2(db.prepare('SELECT COALESCE(SUM(qty * price), 0) s FROM invoice_items WHERE invoice_id = ?').get(id).s);
+  return tx(() => {
+    let delta = 0;
+    for (const d of docs) {
+      const sum = num1C(d.Сумма); if (!(sum > 0)) continue;
+      const payerAcc = (d.ПлательщикСчет || d.ПлательщикРасчСчет || '').replace(/\D/g, ''), rcvAcc = (d.ПолучательСчет || d.ПолучательРасчСчет || '').replace(/\D/g, '');
+      const incoming = acc ? rcvAcc === acc : !!d.ДатаПоступило;
+      const outgoing = acc ? payerAcc === acc : !!d.ДатаСписано;
+      if (!incoming && !outgoing) continue;
+      const date = date1C(incoming ? d.ДатаПоступило || d.Дата : d.ДатаСписано || d.Дата) || now();
+      const who = (incoming ? d.Плательщик1 || d.Плательщик : d.Получатель1 || d.Получатель || '').replace(/^ИНН\s*\d+\s*/, '').trim();
+      const purpose = (d.НазначениеПлатежа || '').trim();
+      const ext = crypto.createHash('sha1').update([d.Номер, d.Дата, sum, payerAcc, rcvAcc, incoming ? 'in' : 'out'].join('|')).digest('hex');
+      let text = `${incoming ? 'От' : 'Кому'}: ${who || '—'}${purpose ? '. ' + purpose : ''}`.slice(0, 300);
+      // оплата по нашему счёту: номер счёта в назначении или ИНН плательщика + точная сумма
+      if (incoming) {
+        const nums = [...purpose.matchAll(/(?:сч(?:[её]т(?:у|а)?)?|сч\.)\s*(?:на\s*оплату\s*)?№?\s*(\d{1,7})/gi)].map(m => Number(m[1]));
+        const payerInn = (d.ПлательщикИНН || '').replace(/\D/g, '');
+        let inv = issued.find(i => nums.includes(i.id) && sumOf(i.id) === sum)
+          || (payerInn && issued.filter(i => i.inn === payerInn && sumOf(i.id) === sum).length === 1 && issued.find(i => i.inn === payerInn && sumOf(i.id) === sum));
+        if (inv) {
+          const r = ins.run(date, bank.id, `Оплата по счёту №${inv.id}, ${who || inv.client}`.slice(0, 300), sum, ext);
+          if (r.changes) {
+            db.prepare("UPDATE invoices SET status = 'paid', paid_bank = ? WHERE id = ? AND status = 'issued'").run(bank.id, inv.id);
+            issued.splice(issued.indexOf(inv), 1); res.paid.push({ id: inv.id, client: inv.client, sum }); res.added++; delta += sum;
+          } else res.skipped++;
+          continue;
+        }
+      }
+      const r = ins.run(date, bank.id, text, incoming ? sum : -sum, ext);
+      if (r.changes) { res.added++; delta += incoming ? sum : -sum; } else res.skipped++;
+    }
+    const mine = accounts.filter(x => (x.РасчСчет || '').replace(/\D/g, '') === acc);
+    const a = mine.find(x => x.КонечныйОстаток) || mine[0] || accounts[0];
+    const end = a ? num1C(a.КонечныйОстаток) : NaN;
+    res.from = a && a.ДатаНачала || null; res.to = a && a.ДатаКонца || null;
+    if (Number.isFinite(end)) { db.prepare('UPDATE banks SET balance = ? WHERE id = ?').run(end, bank.id); res.balance = end; }
+    else if (delta) { db.prepare('UPDATE banks SET balance = round(balance + ?, 2) WHERE id = ?').run(r2(delta), bank.id); res.balance = r2(bank.balance + delta); }
+    if (acc && !bank.acc) db.prepare('UPDATE banks SET acc = ? WHERE id = ?').run(acc.slice(-4), bank.id);
+    return res;
+  });
+}
+
 /* ---------- маршруты ---------- */
 const routes = {
   'GET /api/catalog': () => ({
@@ -800,6 +878,14 @@ const routes = {
     }
     return { id: Number(db.prepare('INSERT INTO banks (name, acc) VALUES (?, ?)').run(name, acc).lastInsertRowid) };
   }),
+  'POST /api/admin/statement': (b) => {
+    const m = /^data:[^;]*;base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data || ''));
+    if (!m) throw new UserError('Выберите файл выписки.');
+    const res = importStatement(Buffer.from(m[1], 'base64'), b.bank);
+    if (res.paid.length) notify(`🏦 <b>Оплачено по выписке ${h(res.bank)}</b>\n` + res.paid.map(p => `Счёт №${p.id} — ${h(p.client)} — ${rubs(p.sum)}`).join('\n'),
+      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачено по выписке: ${res.paid.length} счёт(а)`);
+    return res;
+  },
   'POST /api/admin/txns': (b) => tx(() => {
     const bank = db.prepare('SELECT * FROM banks WHERE id = ?').get(posInt(b.bank));
     const amount = Number(b.amount), text = str(b.text, 200);
@@ -956,7 +1042,7 @@ const server = http.createServer(async (req, res) => {
       const origin = req.headers.origin;
       if (origin && key !== 'POST /api/yookassa/webhook' && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
     }
-    const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/admin/products/photo' ? 12 * 1024 * 1024 : 256 * 1024) : {};
+    const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/admin/products/photo' || key === 'POST /api/admin/statement' ? 12 * 1024 * 1024 : 256 * 1024) : {};
     send(res, 200, await handler(body, req, res, url));
   } catch (e) {
     if (e instanceof UserError) return send(res, e.code, { error: e.message });
