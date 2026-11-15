@@ -22,6 +22,8 @@ if(location.pathname==='/admin'){
   document.querySelector('meta[name=theme-color]').content='#EDECE8';
   document.querySelector('meta[name=apple-mobile-web-app-status-bar-style]').content='default';
   document.title='MS Кабинет';
+  // приложение «MS Кабинет» всегда стартует в кабинете, даже если телефон запомнил адрес с другим разделом
+  if(location.hash!=='#admin')history.replaceState(null,'','/admin#admin');
 }
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
