@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS resets (token TEXT PRIMARY KEY, customer_id INTEGER N
 CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
   status TEXT NOT NULL, created TEXT NOT NULL, url TEXT);
 `);
-for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER']]) {
+for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER'], ['invoices', 'email', 'TEXT'], ['invoices', 'shipped_at', 'TEXT']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
 }
 const UPLOADS = path.join(DATA_DIR, 'uploads');
@@ -182,7 +182,8 @@ function adminState() {
     products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all(),
     banks: db.prepare('SELECT * FROM banks ORDER BY id').all(),
     txns: db.prepare('SELECT * FROM txns ORDER BY id DESC LIMIT 300').all(),
-    invoices: invoiceRows(),
+    invoices: invoiceRows().map(i => ({ ...i, links: docLinks(i) })),
+    docs: docsCfg(),
     orders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 300').all(),
     customers: db.prepare(`SELECT c.id, c.email, c.name, c.phone, c.company, c.inn, c.created,
         (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status != 'cancelled') AS orders,
@@ -370,6 +371,93 @@ async function syncPayment(id) {
   return p.status;
 }
 
+
+/* ---------- документы: счёт и товарная накладная ---------- */
+// ссылки на документы подписаны секретом сервера — их нельзя подобрать перебором номеров
+const DOC_SECRET = (() => { let k = getSetting('doc_secret'); if (!k) { k = crypto.randomBytes(32).toString('hex'); setSetting('doc_secret', k); } return k; })();
+const docSig = (kind, id) => crypto.createHmac('sha256', DOC_SECRET).update(`${kind}:${id}`).digest('hex').slice(0, 32);
+const docLink = (kind, id) => `${SITE_URL}/doc/${kind}/${id}?k=${docSig(kind, id)}`;
+const docLinks = inv => ({ invoice: docLink('invoice', inv.id), waybill: inv.shipped ? docLink('waybill', inv.id) : null });
+const docsCfg = () => ({ autoInvoice: true, autoWaybill: true, ...(getSetting('docs') || {}) });
+
+function rubWords(sum) {
+  const ones = [['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'], ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']];
+  const teens = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+  const tens = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+  const hundreds = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+  const plural = (n, f) => { n %= 100; const d = n % 10; return n > 10 && n < 20 ? f[2] : d === 1 ? f[0] : d >= 2 && d <= 4 ? f[1] : f[2]; };
+  const triad = (n, fem) => { const w = [hundreds[Math.floor(n / 100)]]; const t = n % 100;
+    if (t >= 10 && t < 20) w.push(teens[t - 10]); else { w.push(tens[Math.floor(t / 10)]); w.push(ones[fem ? 1 : 0][t % 10]); } return w.filter(Boolean).join(' '); };
+  const rub = Math.floor(sum + 1e-9), kop = Math.round((sum - rub) * 100);
+  const groups = [[1e9, ['миллиард', 'миллиарда', 'миллиардов'], 0], [1e6, ['миллион', 'миллиона', 'миллионов'], 0], [1e3, ['тысяча', 'тысячи', 'тысяч'], 1]];
+  let n = rub; const out = [];
+  for (const [div, f, fem] of groups) { const g = Math.floor(n / div); if (g) { out.push(triad(g, fem), plural(g, f)); n %= div; } }
+  if (n || !out.length) out.push(n ? triad(n, 0) : 'ноль');
+  const text = out.join(' ').replace(/\s+/g, ' ').trim();
+  return `${text[0].toUpperCase()}${text.slice(1)} ${plural(rub, ['рубль', 'рубля', 'рублей'])} ${String(kop).padStart(2, '0')} ${plural(kop, ['копейка', 'копейки', 'копеек'])}`;
+}
+const ruDate = iso => new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' }).replace(' г.', ' г.');
+const num2 = n => Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function renderDoc(kind, inv) {
+  const o = getOwner(), isInv = kind === 'invoice';
+  const title = isInv ? `Счёт на оплату № ${inv.id} от ${ruDate(inv.date)}` : `Товарная накладная № ${inv.id} от ${ruDate(inv.shipped_at || inv.date)}`;
+  const seller = [o.name, o.inn && `ИНН ${o.inn}`, o.ogrnip && `ОГРНИП ${o.ogrnip}`, o.addr, o.phone && `тел. ${o.phone}`].filter(Boolean).map(h).join(', ');
+  const buyer = [inv.client, inv.inn && `ИНН ${inv.inn}`].filter(Boolean).map(h).join(', ');
+  const rows = inv.items.map((x, i) => `<tr><td class="c">${i + 1}</td><td>${h(x.name)}<div class="sku">${h(x.sku)}</div></td><td class="c">${h(x.unit)}</td><td class="r">${x.qty}</td><td class="r">${num2(x.price)}</td><td class="r">${num2(x.qty * x.price)}</td></tr>`).join('');
+  const qty = inv.items.reduce((s, x) => s + x.qty, 0);
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${h(title)} — Mebel Segment</title><link rel="icon" href="/favicon.png"><style>
+*{box-sizing:border-box}body{margin:0;background:#E8E7E3;font:14px/1.45 Arial,Helvetica,sans-serif;color:#151515}
+.bar{max-width:820px;margin:0 auto;padding:14px 16px;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+.bar img{height:30px}.btn{border:0;background:#151515;color:#fff;font-weight:bold;padding:10px 18px;border-radius:999px;cursor:pointer;font-size:13px}
+.page{max-width:820px;margin:0 auto 40px;background:#fff;padding:36px 40px;border-radius:12px}
+h1{font-size:20px;margin:18px 0 14px}.bank{width:100%;border-collapse:collapse;margin-bottom:6px;font-size:13px}
+.bank td{border:1px solid #333;padding:5px 8px;vertical-align:top}table.items{width:100%;border-collapse:collapse;margin-top:14px}
+table.items th,table.items td{border:1px solid #333;padding:6px 8px;font-size:13px;vertical-align:top}table.items th{background:#f2f1ed;font-weight:bold}
+.c{text-align:center}.r{text-align:right;white-space:nowrap}.sku{color:#777;font-size:11px}.party{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;margin:8px 0}
+.party b{font-weight:normal;color:#555}.tot{margin-top:10px;text-align:right}.tot div{margin:2px 0}.words{margin-top:12px;font-weight:bold}
+.sign{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:40px}.sign div{border-top:1px solid #333;padding-top:4px;font-size:12px;color:#555}
+.note{font-size:12px;color:#555;margin-top:18px}@media print{body{background:#fff}.bar{display:none}.page{padding:0;margin:0;max-width:none;border-radius:0}}
+@media (max-width:600px){.page{padding:20px 14px;border-radius:0}.party{grid-template-columns:1fr}}
+</style></head><body><div class="bar"><img src="/logo.png" alt="Mebel Segment"><button class="btn" onclick="window.print()">Печать / сохранить в PDF</button></div><div class="page">
+${isInv ? `<table class="bank"><tr><td colspan="2">${h(o.bank || 'Банк получателя')}</td><td>БИК</td><td>${h(o.bik)}</td></tr>
+<tr><td colspan="2">Банк получателя</td><td>Сч. №</td><td>${h(o.ks)}</td></tr><tr><td>ИНН ${h(o.inn)}</td><td>КПП —</td><td rowspan="2">Сч. №</td><td rowspan="2">${h(o.acc)}</td></tr>
+<tr><td colspan="2">${h(o.name)}<br><span class="sku">Получатель</span></td></tr></table>` : ''}
+<h1>${h(title)}</h1>
+<div class="party"><b>${isInv ? 'Поставщик' : 'Поставщик (грузоотправитель)'}:</b><span>${seller || '—'}</span><b>${isInv ? 'Покупатель' : 'Покупатель (грузополучатель)'}:</b><span>${buyer || '—'}</span>
+${isInv ? '' : `<b>Основание:</b><span>Счёт № ${inv.id} от ${ruDate(inv.date)}</span>`}</div>
+<table class="items"><thead><tr><th>№</th><th>Товар</th><th>Ед.</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="tot"><div>Итого: <b>${num2(inv.sum)} ₽</b></div><div>Без НДС (УСН, п. 2 ст. 346.11 НК РФ)</div><div>Всего к ${isInv ? 'оплате' : 'отпуску'}: <b>${num2(inv.sum)} ₽</b></div></div>
+<div>Всего наименований ${inv.items.length}, количество ${qty}, на сумму ${num2(inv.sum)} ₽</div><div class="words">${rubWords(inv.sum)}</div>
+${isInv ? `<p class="note">Оплата по счёту означает согласие с условиями поставки. Счёт действителен 5 банковских дней. Товар отпускается по факту поступления денег на расчётный счёт.</p>
+<div class="sign"><div>Индивидуальный предприниматель ______________ ${h((o.name || '').replace(/^ИП\\s*/, ''))}</div><div></div></div>`
+  : `<div class="sign"><div>Отпуск груза произвёл ______________ ${h((o.name || '').replace(/^ИП\\s*/, ''))}</div><div>Груз получил ______________ / ______________</div></div>
+<div class="sign" style="margin-top:20px"><div>М.П. (при наличии)</div><div>«___» ______________ 20___ г.</div></div>`}
+</div></body></html>`;
+}
+async function sendDoc(kind, invId, to) {
+  const [inv] = invoiceRows('WHERE id = ?', invId); if (!inv) throw new UserError('Счёт не найден.', 404);
+  if (kind === 'waybill' && !inv.shipped) throw new UserError('Накладная появится после отгрузки.');
+  const isInv = kind === 'invoice', o = getOwner();
+  const list = inv.items.map(x => `<tr><td style="padding:4px 0">${h(x.name)}</td><td style="padding:4px 0 4px 12px;text-align:right;white-space:nowrap">${x.qty} ${h(x.unit)} × ${rubs(x.price)}</td></tr>`).join('');
+  const ok = await mailTo(to, isInv ? `Счёт № ${inv.id} на ${rubs(inv.sum)} — Mebel Segment` : `Заказ отгружен: накладная № ${inv.id} — Mebel Segment`,
+    mailWrap(isInv ? `Счёт № ${inv.id} на ${rubs(inv.sum)}` : `Ваш заказ отгружен`,
+      `<p>Здравствуйте, ${h(inv.client)}!</p><p>${isInv ? 'Спасибо за заказ. Счёт на оплату — по кнопке ниже: его можно распечатать или сохранить в PDF.' : 'Заказ по счёту № ' + inv.id + ' отгружен. Товарная накладная — по кнопке ниже.'}</p>
+       <table style="width:100%;border-collapse:collapse;font-size:14px;border-top:1px solid #e3e1dc;border-bottom:1px solid #e3e1dc;margin:12px 0">${list}</table>
+       <p style="font-size:16px"><b>Итого: ${rubs(inv.sum)}</b> <span style="color:#8a8984">без НДС</span></p>
+       ${o.phone ? `<p style="color:#555">Вопросы — по телефону ${h(o.phone)}.</p>` : ''}`,
+      { text: isInv ? 'Открыть счёт' : 'Открыть накладную', url: docLink(kind, inv.id) }));
+  if (!ok) throw new UserError('Почта не подключена. Подключите её в «Настройки → Почта».');
+  if (isInv) db.prepare('UPDATE invoices SET email = ? WHERE id = ?').run(to, inv.id);
+  return true;
+}
+function autoDoc(kind, invId) {
+  const inv = db.prepare('SELECT * FROM invoices WHERE id = ?').get(invId);
+  if (!inv || !inv.email || !mailCfg() || !docsCfg()[kind === 'invoice' ? 'autoInvoice' : 'autoWaybill']) return;
+  sendDoc(kind, invId, inv.email).catch(e => console.error('Документ на почту:', e.message));
+}
+
 /* ---------- маршруты ---------- */
 const routes = {
   'GET /api/catalog': () => ({
@@ -385,11 +473,14 @@ const routes = {
     const tags = [b.kind === 'company' ? 'Организация / ИП' : 'Частное лицо', b.delivery === 'delivery' ? 'Доставка' : 'Самовывоз'];
     const comment = [tags.join(' · '), str(b.comment, 500)].filter(Boolean).join('. ');
     // товар без остатка можно заказать «под заказ»: владелец подтвердит срок, списание — только при отгрузке
+    const email = normEmail(b.email) || (me ? me.email : '');
+    if (email && !validEmail(email)) throw new UserError('Проверьте адрес почты.');
     const items = readItems(b.items, false);
     const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id) VALUES (?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
+    if (email) db.prepare('UPDATE invoices SET email = ? WHERE id = ?').run(email, invId);
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
-  }); notifyOrder(r.order);
+  }); notifyOrder(r.order); autoDoc('invoice', r.invoice);
     if (b.pay === 'online' && ykCfg()) {
       try { r.pay_url = await startPayment(r.invoice); }
       catch (e) { console.error('ЮKassa:', e.message); r.pay_error = 'Не получилось перейти к онлайн-оплате. Заказ принят — мы пришлём счёт.'; }
@@ -454,7 +545,7 @@ const routes = {
     const c = customerOf(req); if (!c) throw new UserError('Войдите в личный кабинет.', 401);
     const orders = db.prepare('SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC').all(c.id);
     const invs = orders.length ? invoiceRows(`WHERE order_id IN (${orders.map(() => '?').join(',')})`, ...orders.map(o => o.id)) : [];
-    const list = orders.map(o => ({ ...o, invoice: invs.find(i => i.order_id === o.id) || null }));
+    const list = orders.map(o => { const i = invs.find(x => x.order_id === o.id); return { ...o, invoice: i ? { ...i, links: docLinks(i) } : null }; });
     const live = list.filter(o => o.invoice && o.invoice.status !== 'cancelled');
     const year = String(new Date().getFullYear());
     const o = getOwner();
@@ -520,7 +611,10 @@ const routes = {
   'GET /api/admin/state': () => adminState(),
   'POST /api/admin/invoices': (b) => tx(() => {
     const client = str(b.client, 160); if (!client) throw new UserError('Укажите покупателя.');
-    return { id: createInvoice({ client, inn: str(b.inn, 12).replace(/\D/g, ''), items: readItems(b.items, false) }) };
+    const email = normEmail(b.email); if (email && !validEmail(email)) throw new UserError('Проверьте почту покупателя.');
+    const id = createInvoice({ client, inn: str(b.inn, 12).replace(/\D/g, ''), items: readItems(b.items, false) });
+    if (email) { db.prepare('UPDATE invoices SET email = ? WHERE id = ?').run(email, id); autoDoc('invoice', id); }
+    return { id };
   }),
   'POST /api/admin/invoices/pay': (b) => tx(() => {
     const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
@@ -541,10 +635,10 @@ const routes = {
     for (const x of inv.items) { const p = getP.get(x.product_id); if (p.stock < x.qty) throw new UserError(`Не хватает: ${p.name} (на складе ${p.stock}).`); }
     const upd = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
     for (const x of inv.items) upd.run(x.qty, x.product_id);
-    db.prepare('UPDATE invoices SET shipped = 1 WHERE id = ?').run(inv.id);
+    db.prepare('UPDATE invoices SET shipped = 1, shipped_at = ? WHERE id = ?').run(now(), inv.id);
     if (inv.order_id) db.prepare("UPDATE orders SET status = 'shipped' WHERE id = ?").run(inv.order_id);
-    return { ok: true };
-  }),
+    return { ok: true, id: inv.id };
+  }) && (autoDoc('waybill', posInt(b.id)), { ok: true }),
   'POST /api/admin/invoices/cancel': (b) => tx(() => {
     const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
     if (!inv) throw new UserError('Счёт не найден.', 404);
@@ -666,6 +760,12 @@ const routes = {
     setSetting('mail', m);
     return { ok: true };
   },
+  'POST /api/admin/invoices/send': async (b) => {
+    const to = normEmail(b.email); if (!validEmail(to)) throw new UserError('Укажите почту клиента.');
+    await sendDoc(b.kind === 'waybill' ? 'waybill' : 'invoice', posInt(b.id), to);
+    return { ok: true };
+  },
+  'POST /api/admin/docs': (b) => { setSetting('docs', { autoInvoice: !!b.autoInvoice, autoWaybill: !!b.autoWaybill }); return { ok: true }; },
   'POST /api/admin/yookassa': async (b) => {
     const old = getSetting('yk') || {};
     const cfg = { shop_id: str(b.shop_id, 20).replace(/\D/g, ''), secret: str(b.secret, 100).replace(/\s+/g, '') || old.secret || '',
@@ -737,6 +837,15 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
   const key = `${req.method} ${url.pathname}`;
   try {
+    const dm = url.pathname.match(/^\/doc\/(invoice|waybill)\/(\d+)$/);
+    if (dm && req.method === 'GET') {
+      const k = url.searchParams.get('k') || '', want = docSig(dm[1], Number(dm[2]));
+      if (k.length !== want.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(want))) return send(res, 404, 'Документ не найден', 'text/plain; charset=utf-8');
+      const [inv] = invoiceRows('WHERE id = ?', Number(dm[2]));
+      if (!inv || (dm[1] === 'waybill' && !inv.shipped)) return send(res, 404, 'Документ не найден', 'text/plain; charset=utf-8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(renderDoc(dm[1], inv));
+    }
     if (url.pathname.startsWith('/uploads/')) {
       const name = url.pathname.slice(9);
       if (!/^[0-9]+-[0-9a-f]{12}\.(jpg|png|webp)$/.test(name)) return send(res, 404, 'Not found', 'text/plain');
