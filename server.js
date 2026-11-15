@@ -431,9 +431,28 @@ function readBody(req, limit = 256 * 1024) {
     req.on('error', reject);
   });
 }
+// По адресу /admin — та же страница, но с настройками приложения «MS Кабинет» прямо в HTML:
+// iPhone читает их при загрузке страницы и не видит подмену скриптом.
+const ADMIN_HEAD = [
+  ['<link rel="manifest" href="/manifest.webmanifest">', '<link rel="manifest" href="/manifest-admin.webmanifest">'],
+  ['<link rel="apple-touch-icon" href="/apple-touch-icon.png">', '<link rel="apple-touch-icon" href="/admin-apple-touch-icon.png">'],
+  ['<meta name="theme-color" content="#151515">', '<meta name="theme-color" content="#EDECE8">'],
+  ['<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">', '<meta name="apple-mobile-web-app-status-bar-style" content="default">'],
+  ['<meta name="apple-mobile-web-app-title" content="Mebel Segment">', '<meta name="apple-mobile-web-app-title" content="MS Кабинет">'],
+  [/<title>[^<]*<\/title>/, '<title>MS Кабинет</title>'],
+];
+function serveAdminPage(res) {
+  fs.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8', (err, html) => {
+    if (err) return send(res, 500, 'Ошибка', 'text/plain; charset=utf-8');
+    for (const [from, to] of ADMIN_HEAD) html = html.replace(from, to);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    res.end(html);
+  });
+}
 function serveStatic(req, res, urlPath) {
   let p = decodeURIComponent(urlPath);
-  if (p === '/' || p === '/admin') p = '/index.html';
+  if (p === '/admin' || p === '/admin/') return serveAdminPage(res);
+  if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, 'Not found', 'text/plain');
   fs.readFile(file, (err, data) => {

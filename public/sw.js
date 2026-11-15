@@ -2,7 +2,7 @@
 // Страница и оформление — сначала из сети, при отсутствии связи — из сохранённой копии.
 // Фото товаров — из сохранённой копии (они не меняются). Каталог — из сети, без связи — последняя копия.
 // Личные данные (кабинеты, заказы) не сохраняются никогда.
-const VERSION = 'ms-v2';
+const VERSION = 'ms-v3';
 const SHELL = ['/', '/logo.png', '/logo-light.png', '/hero-hinge.jpg', '/icon-192.png', '/favicon.png'];
 
 self.addEventListener('install', e => {
@@ -32,7 +32,7 @@ self.addEventListener('fetch', e => {
     return;
   }
   e.respondWith(fetch(req).then(res => {
-    if (res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req.mode === 'navigate' ? '/' : req, copy)); }
+    if (res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req.mode === 'navigate' ? url.pathname : req, copy)); }
     return res;
-  }).catch(() => caches.match(req.mode === 'navigate' ? '/' : req)));
+  }).catch(() => caches.match(req.mode === 'navigate' ? url.pathname : req).then(hit => hit || caches.match('/'))));
 });
