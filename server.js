@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const tls = require('node:tls');
 // у многих VPS нет IPv6-связи: сначала пробуем IPv4, иначе запросы наружу (Telegram) обрываются
 require('node:dns').setDefaultResultOrder('ipv4first');
 
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, pass TEXT NOT NULL, name TEXT NOT NULL,
   phone TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', inn TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, kind TEXT NOT NULL, customer_id INTEGER, exp INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS resets (token TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, exp INTEGER NOT NULL);
 `);
 for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
@@ -171,6 +173,7 @@ function adminState() {
   const recItems = db.prepare('SELECT ri.*, p.sku, p.name FROM receipt_items ri JOIN products p ON p.id = ri.product_id WHERE receipt_id = ?');
   return {
     owner: getOwner(),
+    mail: (m => m ? { host: m.host, port: m.port, user: m.user, to: m.to || '', ok: !!m.pass } : null)(getSetting('mail')),
     tg: (t => t ? { bot: t.bot || '', linked: !!t.chat_id, chat: t.chat_name || '' } : null)(getSetting('tg')),
     cats: CATS,
     products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all(),
@@ -209,6 +212,49 @@ function createInvoice({ client, inn, items, orderId }) {
 }
 
 
+
+/* ---------- почта (SMTP через SSL, порт 465) ---------- */
+function smtpSend({ host, port, user, pass }, to, subject, html) {
+  return new Promise((resolve, reject) => {
+    const sock = tls.connect({ host, port: Number(port) || 465, servername: host, rejectUnauthorized: process.env.SMTP_TEST_INSECURE !== '1' });
+    let buf = '', step = 0, done = false;
+    const fail = e => { if (done) return; done = true; sock.destroy(); reject(e instanceof Error ? e : new Error(e)); };
+    const timer = setTimeout(() => fail(new Error('почтовый сервер не отвечает')), 20000);
+    const b64 = v => Buffer.from(v, 'utf8').toString('base64');
+    const body = b64(html).replace(/.{76}/g, '$&\r\n');
+    const msg = [`From: =?UTF-8?B?${b64('Mebel Segment')}?= <${user}>`, `To: <${to}>`, `Subject: =?UTF-8?B?${b64(subject)}?=`,
+      `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomBytes(12).toString('hex')}@${user.split('@')[1] || 'mebel-segment.ru'}>`,
+      'MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64', '', body, '.'].join('\r\n');
+    const script = [
+      [220, `EHLO mebel-segment.ru`], [250, 'AUTH LOGIN'], [334, b64(user)], [334, b64(pass)],
+      [235, `MAIL FROM:<${user}>`], [250, `RCPT TO:<${to}>`], [250, 'DATA'], [354, msg], [250, 'QUIT']];
+    sock.setEncoding('utf8');
+    sock.on('error', e => fail(new Error(e.code === 'ENOTFOUND' ? 'не найден почтовый сервер ' + host : e.message)));
+    sock.on('data', d => {
+      buf += d;
+      let m; while ((m = buf.match(/^(\d{3})([ -])(.*)\r?\n/m))) {
+        buf = buf.slice(m.index + m[0].length);
+        if (m[2] === '-') continue;
+        const code = Number(m[1]), [want, send] = script[step] || [];
+        if (want === undefined) { clearTimeout(timer); done = true; sock.end(); return resolve(); }
+        if (code !== want) {
+          clearTimeout(timer);
+          return fail(new Error(code === 535 || code === 534 ? 'почта не приняла логин или пароль (нужен пароль приложения, не обычный пароль)' : `почтовый сервер ответил ${code} ${m[3]}`));
+        }
+        step++; sock.write(send + '\r\n');
+      }
+    });
+  });
+}
+const mailCfg = () => { const m = getSetting('mail'); return m && m.host && m.user && m.pass ? m : null; };
+async function mailTo(to, subject, html) { const m = mailCfg(); if (!m) return false; await smtpSend(m, to, subject, html); return true; }
+const mailWrap = (title, inner, btn) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#151515">
+  <div style="background:#1B1B1B;color:#EDECE8;padding:18px 22px;border-radius:14px 14px 0 0;font-weight:bold;letter-spacing:.06em">MEBEL SEGMENT</div>
+  <div style="background:#fff;border:1px solid #e3e1dc;border-top:0;padding:22px;border-radius:0 0 14px 14px;line-height:1.5">
+  <h2 style="margin:0 0 12px;font-size:20px">${title}</h2>${inner}
+  ${btn ? `<p style="margin:22px 0 0"><a href="${btn.url}" style="background:#151515;color:#fff;text-decoration:none;padding:12px 20px;border-radius:999px;font-weight:bold;display:inline-block">${btn.text}</a></p>` : ''}
+  </div><p style="color:#8a8984;font-size:12px;text-align:center">mebel-segment.ru</p></div>`;
+
 /* ---------- уведомления в Telegram ---------- */
 const SITE_URL = process.env.SITE_URL || 'https://mebel-segment.ru';
 const getSetting = k => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(k); return r ? JSON.parse(r.value) : null; };
@@ -235,7 +281,16 @@ async function tgSend(text, link) {
     reply_markup: link ? { inline_keyboard: [[{ text: link.text, url: link.url }]] } : undefined });
   return true;
 }
-function notify(text, link) { tgSend(text, link).catch(e => console.error('Telegram:', e.message)); }
+// уведомление владельцу: в Telegram (если подключён) и на почту (если подключена)
+function notify(text, link, subject) {
+  tgSend(text, link).catch(e => console.error('Telegram:', e.message));
+  const m = mailCfg();
+  if (m && m.to) {
+    const [first, ...rest] = text.split('\n');
+    mailTo(m.to, subject || first.replace(/<[^>]+>/g, ''), mailWrap(first.replace(/^\S+\s/, ''), `<p style="margin:0">${rest.join('<br>')}</p>`, link))
+      .catch(e => console.error('Почта:', e.message));
+  }
+}
 function notifyOrder(orderId) {
   const o = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId); if (!o) return;
   const [inv] = invoiceRows('WHERE order_id = ?', o.id);
@@ -243,7 +298,7 @@ function notifyOrder(orderId) {
   const lines = (inv ? inv.items : []).map(x => `• ${h(x.name)} — ${x.qty} ${h(x.unit)} × ${rubs(x.price)}`);
   const head = [`🛒 <b>Новый заказ №${o.id}</b> — <b>${rubs(inv ? inv.sum : 0)}</b>`, `👤 ${h(o.client)}${c ? ` (кабинет: ${h(c.email)})` : ''}`,
     `📞 ${h(o.phone)}`, o.inn ? `🏢 ИНН ${h(o.inn)}` : '', o.comment ? `💬 ${h(o.comment)}` : ''].filter(Boolean);
-  notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' });
+  notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Новый заказ №${o.id} на ${rubs(inv ? inv.sum : 0)} — ${o.client}`);
 }
 
 /* ---------- маршруты ---------- */
@@ -285,7 +340,7 @@ const routes = {
       .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now()).lastInsertRowid);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     linkOrders(c); newSession(res, req, 'customer', id);
-    notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' });
+    notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' }, `Новый клиент на сайте: ${c.name}`);
     return { ok: true };
   },
   'POST /api/account/login': (b, req, res) => {
@@ -319,6 +374,33 @@ const routes = {
     if (digits(phone).length < 10) throw new UserError('Укажите телефон из 10–11 цифр.');
     db.prepare('UPDATE customers SET name = ?, phone = ?, company = ?, inn = ? WHERE id = ?').run(name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), c.id);
     linkOrders({ ...c, phone });
+    return { ok: true };
+  },
+  'POST /api/account/forgot': async (b, req) => {
+    const lim = tooMany(req, 'forgot:');
+    if (!mailCfg()) throw new UserError('Восстановление по почте пока не подключено. Позвоните нам — сбросим пароль.');
+    const c = db.prepare('SELECT * FROM customers WHERE email = ?').get(normEmail(b.email));
+    lim.fail(); // считаем каждую попытку, чтобы нельзя было перебирать почты
+    if (c) {
+      const t = crypto.randomBytes(24).toString('hex');
+      db.prepare('DELETE FROM resets WHERE exp < ? OR customer_id = ?').run(Date.now(), c.id);
+      db.prepare('INSERT INTO resets (token, customer_id, exp) VALUES (?, ?, ?)').run(tokenHash(t), c.id, Date.now() + 60 * 60 * 1000);
+      try {
+        await mailTo(c.email, 'Восстановление пароля — Mebel Segment', mailWrap('Новый пароль для личного кабинета',
+          `<p>Здравствуйте, ${h(c.name)}!</p><p>Чтобы задать новый пароль, нажмите кнопку ниже. Ссылка действует 1 час.</p><p style="color:#8a8984;font-size:13px">Если вы не просили сменить пароль, просто удалите это письмо.</p>`,
+          { text: 'Задать новый пароль', url: `${SITE_URL}/?reset=${t}#account` }));
+      } catch (e) { console.error('Почта:', e.message); throw new UserError('Не получилось отправить письмо. Попробуйте позже или позвоните нам.'); }
+    }
+    return { ok: true }; // одинаковый ответ, чтобы не раскрывать, зарегистрирована ли почта
+  },
+  'POST /api/account/reset': (b, req, res) => {
+    const r = db.prepare('SELECT * FROM resets WHERE token = ?').get(tokenHash(str(b.token, 100)));
+    if (!r || r.exp < Date.now()) throw new UserError('Ссылка устарела или уже использована. Запросите новую.');
+    const pw = String(b.password || ''); if (pw.length < 8 || pw.length > 200) throw new UserError('Пароль — не меньше 8 символов.');
+    db.prepare('UPDATE customers SET pass = ? WHERE id = ?').run(hashPass(pw), r.customer_id);
+    db.prepare('DELETE FROM resets WHERE customer_id = ?').run(r.customer_id);
+    db.prepare("DELETE FROM sessions WHERE kind = 'customer' AND customer_id = ?").run(r.customer_id);
+    newSession(res, req, 'customer', r.customer_id);
     return { ok: true };
   },
   'POST /api/account/password': (b, req) => {
@@ -473,6 +555,19 @@ const routes = {
     catch (e) { throw new UserError('Не отправилось: ' + e.message); }
     return { ok: true };
   },
+  'POST /api/admin/mail': async (b) => {
+    const old = getSetting('mail') || {};
+    const m = { host: str(b.host, 100).toLowerCase(), port: posInt(b.port) || 465, user: normEmail(b.user), pass: String(b.pass || '') || old.pass || '', to: normEmail(b.to) || normEmail(b.user) };
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(m.host)) throw new UserError('Укажите почтовый сервер, например smtp.yandex.ru.');
+    if (!validEmail(m.user)) throw new UserError('Укажите адрес ящика, с которого отправлять письма.');
+    if (!m.pass) throw new UserError('Укажите пароль приложения для этого ящика.');
+    if (!validEmail(m.to)) throw new UserError('Проверьте адрес для уведомлений.');
+    try { await smtpSend(m, m.to, 'Проверка почты — Mebel Segment', mailWrap('Почта подключена ✅', '<p>Сюда будут приходить новые заказы и регистрации клиентов с сайта. Клиенты смогут восстанавливать пароль по почте.</p>')); }
+    catch (e) { throw new UserError('Не получилось отправить проверочное письмо: ' + e.message + '.'); }
+    setSetting('mail', m);
+    return { ok: true };
+  },
+  'POST /api/admin/mail/off': () => { db.prepare("DELETE FROM settings WHERE key = 'mail'").run(); return { ok: true }; },
   'POST /api/admin/telegram/off': () => { db.prepare("DELETE FROM settings WHERE key = 'tg'").run(); return { ok: true }; },
   'POST /api/admin/owner': (b) => {
     const o = {}; for (const k of Object.keys(DEFAULT_OWNER)) o[k] = str(b[k], 300);

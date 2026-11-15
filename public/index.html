@@ -400,7 +400,7 @@ const ICONS={
 const HERO_ART='<img class="hero-photo" src="/hero-hinge.jpg" alt="Петля 3D с доводчиком Mebel Segment" loading="eager">';
 const TICKER=['Доводчик — тихое закрывание','Clip-on без инструмента','Упаковка с крепежом','Опт коробками','3D-регулировка','Счёт для юрлиц и ИП','Также на Ozon'];
 const LOW=10;
-let C=null, A=null, U=undefined, accTab='login', cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup'}, lastOrder=null;
+let C=null, A=null, U=undefined, accTab='login', resetToken=new URLSearchParams(location.search).get('reset'), cart={}, filt={cat:'',q:''}, tab='summary', ck={kind:'person',delivery:'pickup'}, lastOrder=null;
 try{cart=JSON.parse(localStorage.getItem('cart'))||{}}catch(e){}
 const saveCart=()=>{try{localStorage.setItem('cart',JSON.stringify(cart))}catch(e){}};
 
@@ -418,6 +418,7 @@ async function api(url,body){
   return data;
 }
 const isAdminRoute=()=>location.hash==='#admin'||(location.pathname==='/admin'&&(!location.hash||location.hash==='#'));
+if(resetToken){accTab='reset';history.replaceState(null,'','/#account')}
 const isAccountRoute=()=>location.hash==='#account';
 async function loadMe(){try{U=await api('/api/account/me')}catch(e){U=null}updAcc()}
 function updAcc(){$('#accTxt').textContent=U?'Кабинет':'Войти';$('#accBtn').classList.toggle('on',!!U)}
@@ -636,13 +637,24 @@ function accountView(){
   if(!U)return`<div class="wrap acc-wrap"><div class="acc-card">
    <h2 class="caps">Личный кабинет</h2>
    <p class="muted" style="margin:0">История заказов, счета и суммы покупок — в одном месте.</p>
-   <div class="seg" role="group" aria-label="Вход или регистрация"><button type="button" data-act="accTab" data-v="login" aria-pressed="${accTab==='login'}">Вход</button><button type="button" data-act="accTab" data-v="reg" aria-pressed="${accTab==='reg'}">Регистрация</button></div>
+   <div class="seg" role="group" aria-label="Вход или регистрация"><button type="button" data-act="accTab" data-v="login" aria-pressed="${accTab==='login'||accTab==='forgot'||accTab==='reset'}">Вход</button><button type="button" data-act="accTab" data-v="reg" aria-pressed="${accTab==='reg'}">Регистрация</button></div>
    ${accTab==='login'?`<form class="stack" id="uLogin">
      <label>Почта<input id="u-email" type="email" autocomplete="email" required></label>
      <label>Пароль<input id="u-pass" type="password" autocomplete="current-password" required></label>
      <p class="err" id="u-err" hidden></p>
      <button class="btn primary block" type="submit">Войти</button>
-     <p class="hint">Забыли пароль? Позвоните или напишите нам${owner().phone?` по номеру <a href="tel:+${digits(owner().phone)}">${esc(owner().phone)}</a>`:''} — сбросим и пришлём новый.</p>
+     <button type="button" class="rm" data-act="accTab" data-v="forgot" style="justify-self:center">Забыли пароль?</button>
+   </form>`:accTab==='forgot'?`<form class="stack" id="uForgot">
+     <p style="margin:0">Укажите почту, с которой регистрировались. Пришлём ссылку для нового пароля.</p>
+     <label>Почта<input id="f-email" type="email" autocomplete="email" required></label>
+     <p class="err" id="f-err" hidden></p><div class="done" id="f-ok" hidden></div>
+     <button class="btn primary block" type="submit">Прислать ссылку</button>
+     <p class="hint">Не приходит письмо? Проверьте «Спам» или позвоните нам${owner().phone?` по номеру <a href="tel:+${digits(owner().phone)}">${esc(owner().phone)}</a>`:''}.</p>
+   </form>`:accTab==='reset'?`<form class="stack" id="uReset">
+     <p style="margin:0"><b>Задайте новый пароль</b> для личного кабинета.</p>
+     <label>Новый пароль (не меньше 8 символов)<input id="n-pass" type="password" autocomplete="new-password" minlength="8" required></label>
+     <p class="err" id="n-err" hidden></p>
+     <button class="btn primary block" type="submit">Сохранить и войти</button>
    </form>`:`<form class="stack" id="uReg">
      <label>Имя *<input id="r-name" type="text" autocomplete="name" required></label>
      <label>Почта *<input id="r-email" type="email" autocomplete="email" required></label>
@@ -830,6 +842,7 @@ settings(){
    ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
    ${f('phone','Телефон на сайте и WhatsApp','+7 900 000-00-00')}${f('email','Почта на сайте')}</div>
    <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+  ${mailBox()}
   ${tgBox()}
   <div class="formbox"><h3>Банки и текущие остатки</h3>
    <p class="muted" style="margin:0;font-size:13px">Впишите, сколько сейчас денег на каждом счёте. Разница запишется как корректировка.</p>
@@ -841,6 +854,29 @@ settings(){
   </div>`;
 }
 };
+const MAIL_PRESETS={'smtp.yandex.ru':['Яндекс Почта','id.yandex.ru → «Безопасность» → «Пароли приложений» → «Почта»','https://id.yandex.ru/security/app-passwords'],
+ 'smtp.mail.ru':['Mail.ru','Почта → «Настройки» → «Безопасность» → «Пароли для внешних приложений»','https://account.mail.ru/user/2-step-auth/passwords/'],
+ 'smtp.gmail.com':['Gmail','сначала включите двухэтапную аутентификацию, затем myaccount.google.com/apppasswords','https://myaccount.google.com/apppasswords']};
+let mailHost='smtp.yandex.ru';
+function mailBox(edit){
+  const m=A.mail;
+  if(m&&m.ok&&!edit)return`<div class="formbox" id="mailBox"><h3>Почта <span class="pill p-ok">Подключена</span></h3>
+   <p style="margin:0">Письма отправляются с <b>${esc(m.user)}</b>. Новые заказы и регистрации приходят на <b>${esc(m.to)}</b>. Клиенты могут восстановить пароль по почте.</p>
+   <div class="acts"><button class="btn" data-act="mailEdit">Изменить</button><button class="btn danger" data-act="mailOff">Отключить</button></div></div>`;
+  const h=m&&m.host||mailHost,pr=MAIL_PRESETS[h];
+  return`<form class="formbox" id="mailForm"><h3>Почта: уведомления о заказах и восстановление паролей</h3>
+   <p class="hint" style="margin:0">Сайт будет отправлять письма с вашего ящика: вам — о новых заказах, клиентам — ссылку для нового пароля. Подойдёт отдельный ящик, например <i>zakaz.mebelsegment@yandex.ru</i>.</p>
+   <div class="seg" role="group" aria-label="Почта">${Object.entries(MAIL_PRESETS).map(([k,v])=>`<button type="button" data-act="mailPreset" data-v="${k}" aria-pressed="${h===k}">${v[0]}</button>`).join('')}</div>
+   ${pr?`<p class="note">Нужен <b>пароль приложения</b> — не обычный пароль от почты. Где взять: ${pr[1]}. <a href="${pr[2]}" target="_blank" rel="noopener">Открыть →</a></p>`:''}
+   <div class="fgrid">
+    <label>Ящик, с которого отправлять<input id="m-user" type="email" autocomplete="off" value="${esc(m&&m.user||'')}" placeholder="zakaz@yandex.ru"></label>
+    <label>Пароль приложения<input id="m-pass" type="password" autocomplete="new-password" placeholder="${m&&m.ok?'оставьте пустым, чтобы не менять':'16 символов из настроек почты'}"></label>
+    <label>Куда присылать заказы<input id="m-to" type="email" value="${esc(m&&m.to||'')}" placeholder="можно тот же ящик"></label>
+   </div>
+   <details><summary class="muted" style="cursor:pointer;font-size:13px">Другая почта</summary><div class="fgrid" style="margin-top:8px"><label>Сервер (SMTP)<input id="m-host" type="text" value="${esc(h)}"></label><label>Порт<input id="m-port" type="number" value="${esc(m&&m.port||465)}"></label></div></details>
+   <p class="err" id="m-err" hidden></p>
+   <div class="acts"><button class="btn primary" type="submit">Подключить и отправить проверку</button>${m&&m.ok?'<button type="button" class="btn" data-act="mailCancel">Отмена</button>':''}</div></form>`;
+}
 function tgBox(){
   const t=A.tg;
   if(t&&t.linked)return`<div class="formbox"><h3>Уведомления в Telegram <span class="pill p-ok">Работают</span></h3>
@@ -907,6 +943,10 @@ document.addEventListener('click',async e=>{
        <div class="done"><span class="muted">Временный пароль</span><b class="mono" style="font-size:22px;letter-spacing:.08em;user-select:all">${esc(r.password)}</b></div>
        <p class="hint">Передайте пароль клиенту. Он войдёт с ним и сможет сменить его в личном кабинете. Пароль показывается один раз.</p>
        <button class="btn primary block" data-act="close">Готово</button>`)}catch(e){toast(e.message)}}
+  else if(a==='mailPreset'){mailHost=v;if(A.mail)A.mail.host=v;const keep={u:$('#m-user')?.value,t:$('#m-to')?.value};$('#mailForm').outerHTML=mailBox(true);if(keep.u)$('#m-user').value=keep.u;if(keep.t)$('#m-to').value=keep.t}
+  else if(a==='mailEdit'){$('#mailBox').outerHTML=mailBox(true)}
+  else if(a==='mailCancel'){$('#mailForm').outerHTML=mailBox()}
+  else if(a==='mailOff'){const k='mailoff';if(!armed.has(k)){armed.add(k);t.textContent='Точно?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent='Отключить'},4000);return}armed.delete(k);act('/api/admin/mail/off',{},'Почта отключена')}
   else if(a==='tgLink'||a==='tgTest'||a==='tgOff'){
     if(a==='tgOff'){const k='tgoff';if(!armed.has(k)){armed.add(k);t.textContent='Точно?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent='Отключить'},4000);return}armed.delete(k)}
     t.disabled=true;
@@ -973,6 +1013,10 @@ document.addEventListener('submit',async e=>{
     }catch(e){showErr(err,e.message);btn.disabled=false}
     return;
   }
+  if(f.id==='uForgot'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;
+    try{await api('/api/account/forgot',{email:$('#f-email').value});const ok=$('#f-ok');ok.hidden=false;ok.innerHTML='<b>Письмо отправлено</b><span>Если эта почта зарегистрирована, в течение пары минут придёт письмо со ссылкой. Проверьте и папку «Спам».</span>';$('#f-err').hidden=true}
+    catch(e){showErr('f-err',e.message);btn.disabled=false}return}
+  if(f.id==='uReset'){try{await api('/api/account/reset',{token:resetToken,password:$('#n-pass').value});resetToken=null;accTab='login';await loadMe();$('#app').innerHTML=accountView();toast('Пароль изменён, вы вошли')}catch(e){showErr('n-err',e.message)}return}
   if(f.id==='uProfile'){try{await api('/api/account/profile',{name:$('#p2-name').value,phone:$('#p2-phone').value,company:$('#p2-company').value,inn:$('#p2-inn').value});await loadMe();$('#app').innerHTML=accountView();toast('Данные сохранены')}catch(e){showErr('p2-err',e.message)}return}
   if(f.id==='uPass'){try{await api('/api/account/password',{old:$('#pw-old').value,password:$('#pw-new').value});f.reset();toast('Пароль изменён')}catch(e){showErr('pw-err',e.message)}return}
   if(f.id==='gate'){
@@ -985,6 +1029,9 @@ document.addEventListener('submit',async e=>{
   else if(f.id==='pForm')run('p-err','/api/admin/products',{id:$('#p-id').value||undefined,sku:$('#p-sku').value,name:$('#p-name').value,cat:$('#p-cat').value,unit:$('#p-unit').value,price:$('#p-price').value,box:$('#p-box').value,descr:$('#p-descr').value},'Товар сохранён');
   else if(f.id==='rForm')run('r-err','/api/admin/receipts',{supplier:$('#r-sup').value,bank:$('#r-bank').value,items:readLines('r-lines',true)},'Приход проведён, остатки увеличены');
   else if(f.id==='tForm')run('t-err','/api/admin/txns',{bank:$('#t-bank').value,text:$('#t-text').value,amount:$('#t-amount').value},'Операция добавлена');
+  else if(f.id==='mailForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;btn.textContent='Отправляю проверку…';
+    run('m-err','/api/admin/mail',{host:$('#m-host').value.trim(),port:$('#m-port').value,user:$('#m-user').value.trim(),pass:$('#m-pass').value,to:$('#m-to').value.trim()},'Почта подключена — проверьте входящие')
+      .finally(()=>{if(btn.isConnected){btn.disabled=false;btn.textContent='Подключить и отправить проверку'}})}
   else if(f.id==='tgForm'){const btn=f.querySelector('button[type=submit]');if(btn)btn.disabled=true;run('tg-err','/api/admin/telegram',{token:$('#tg-token').value.trim()},'Бот сохранён. Теперь нажмите «Start» в боте').finally(()=>{if(btn)btn.disabled=false})}
   else if(f.id==='oForm'){const b={};for(const k of Object.keys(A.owner))b[k]=$('#o-'+k)?.value??'';C=null;run(null,'/api/admin/owner',b,'Сохранено')}
   else if(f.dataset.bank!==undefined)run(null,'/api/admin/banks',{id:f.dataset.bank||undefined,name:f.querySelector('.b-name').value,acc:f.querySelector('.b-acc').value,balance:f.dataset.bank?f.querySelector('.b-bal').value:undefined},'Банк сохранён');
