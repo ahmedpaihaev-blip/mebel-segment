@@ -6,6 +6,13 @@
 <title>Mebel Segment — мебельная фурнитура оптом</title>
 <meta name="description" content="Mebel Segment, Ставрополь: петли с доводчиком clip-on, 3D-петли, шариковые направляющие и направляющие скрытого монтажа. Опт коробками и розница, счёт для юрлиц и ИП.">
 <link rel="icon" href="/favicon.png" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#151515">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mebel Segment">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800;900&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -243,6 +250,9 @@ textarea{resize:vertical}
 .done{background:var(--chip);border-radius:var(--r-lg);padding:18px;display:grid;gap:6px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:var(--r-pill);border:2px solid var(--accent);z-index:30;font-size:13px;font-weight:700;max-width:calc(100% - 32px)}
 
+.app-ico{display:flex;gap:14px;align-items:center;background:var(--chip);border-radius:var(--r-md);padding:12px}
+.app-ico img{width:56px;height:56px;border-radius:14px}
+.steps-list{margin:0;padding-left:20px;display:grid;gap:8px}
 /* личный кабинет клиента */
 .acc-btn{gap:6px}
 .acc-btn.on{background:var(--chip);border-color:var(--chip)}
@@ -388,7 +398,8 @@ const dt=iso=>new Date(iso).toLocaleDateString('ru-RU');
 const digits=s=>String(s||'').replace(/\D/g,'').replace(/^8(?=\d{10}$)/,'7');
 function toast(t){document.querySelectorAll('.toast').forEach(x=>x.remove());const el=document.createElement('div');el.className='toast';el.setAttribute('role','status');el.textContent=t;document.body.appendChild(el);setTimeout(()=>el.remove(),2600)}
 async function api(url,body){
-  const r=await fetch(url,body===undefined?{credentials:'same-origin'}:{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  let r;try{r=await fetch(url,body===undefined?{credentials:'same-origin'}:{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}
+  catch(e){const er=new Error('Нет связи с интернетом. Проверьте подключение и попробуйте ещё раз.');er.status=0;throw er}
   let data={};try{data=await r.json()}catch(e){}
   if(!r.ok){const e=new Error(data.error||'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.');e.status=r.status;throw e}
   return data;
@@ -398,6 +409,23 @@ const isAccountRoute=()=>location.hash==='#account';
 async function loadMe(){try{U=await api('/api/account/me')}catch(e){U=null}updAcc()}
 function updAcc(){$('#accTxt').textContent=U?'Кабинет':'Войти';$('#accBtn').classList.toggle('on',!!U)}
 const owner=()=>(A&&A.owner)||(C&&C.owner)||{};
+
+
+/* ---------- приложение на телефоне ---------- */
+let installEvt=null;
+const isApp=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e});
+addEventListener('appinstalled',()=>{installEvt=null;toast('Приложение установлено');renderFoot()});
+if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+async function installApp(){
+  if(installEvt){installEvt.prompt();const r=await installEvt.userChoice;installEvt=null;if(r.outcome==='accepted')toast('Устанавливаем…');return}
+  const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  modal(`<div class="m-head"><h2 class="caps">Установить приложение</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+   <div class="app-ico"><img src="/icon-192.png" alt=""><div><b>Mebel Segment</b><div class="muted">Иконка на экране телефона, открывается как приложение</div></div></div>
+   ${ios?`<ol class="steps-list"><li>Откройте сайт в <b>Safari</b>.</li><li>Нажмите кнопку <b>«Поделиться»</b> — квадрат со стрелкой вверх внизу экрана.</li><li>Выберите <b>«На экран „Домой“»</b> и нажмите <b>«Добавить»</b>.</li></ol>`
+   :`<ol class="steps-list"><li>Откройте сайт в <b>Chrome</b> или <b>Яндекс Браузере</b>.</li><li>Нажмите меню <b>⋮</b> вверху справа.</li><li>Выберите <b>«Установить приложение»</b> или <b>«Добавить на главный экран»</b>.</li></ol>`}
+   <button class="btn primary block" data-act="close">Понятно</button>`);
+}
 
 /* ---------- общий рендер ---------- */
 async function render(){
@@ -437,7 +465,8 @@ function renderFoot(){
    <div><div class="lbl">Телефон</div>${o.phone?`<a class="big num" href="tel:+${wa}">${esc(o.phone)}</a>`:'<span class="small">Появится после заполнения в кабинете</span>'}
      ${o.phone?`<div><a class="small" href="https://wa.me/${wa}" target="_blank" rel="noopener">Написать в WhatsApp →</a></div>`:''}</div>
    <div><div class="lbl">Почта</div>${o.email?`<a class="big" href="mailto:${esc(o.email)}">${esc(o.email)}</a>`:'<span class="small">—</span>'}</div>
-   <div><div class="lbl">Сайт</div><span class="big">mebel-segment.ru</span><div class="small">© ${new Date().getFullYear()} ${o.name?esc(o.name):'Mebel Segment'}</div></div>
+   <div><div class="lbl">Сайт</div><span class="big">mebel-segment.ru</span>
+     ${isApp()?'':`<div style="margin-top:10px"><button class="btn ghost-light small" data-act="install">Установить приложение</button></div>`}<div class="small">© ${new Date().getFullYear()} ${o.name?esc(o.name):'Mebel Segment'}</div></div>
   </div>`;
 }
 function updCount(){$('#cartCount').textContent=Object.values(cart).reduce((a,b)=>a+b,0)}
@@ -833,6 +862,7 @@ document.addEventListener('click',async e=>{
   else if(a==='checkout'){modal(checkoutView())}
   else if(a==='ck'){ck[t.dataset.k]=v;const keep={};['c-name','c-phone','c-inn','c-comment'].forEach(k=>{if($('#'+k))keep[k]=$('#'+k).value});modal(checkoutView());for(const k in keep)if($('#'+k))$('#'+k).value=keep[k]}
   else if(a==='wa'){const o=owner();window.open(`https://wa.me/${digits(o.phone)}?text=${encodeURIComponent(orderText($('#c-name')?.value.trim(),$('#c-phone')?.value.trim()))}`,'_blank','noopener')}
+  else if(a==='install'){installApp()}
   else if(a==='accTab'){accTab=v;$('#app').innerHTML=accountView()}
   else if(a==='uLogout'){await api('/api/account/logout',{}).catch(()=>{});U=null;updAcc();$('#app').innerHTML=accountView();toast('Вы вышли из кабинета')}
   else if(a==='uInv'){const o=U.orders.find(x=>x.id==id);if(o&&o.invoice)modal(invoiceDoc(o.invoice,U.owner),true)}
