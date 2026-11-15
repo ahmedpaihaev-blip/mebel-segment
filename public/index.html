@@ -869,6 +869,11 @@ settings(){
    ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
    ${f('phone','Телефон на сайте и WhatsApp','+7 900 000-00-00')}${f('email','Почта на сайте')}</div>
    <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+  <form class="formbox" id="bkForm"><h3>Копия базы на почту ${A.backup&&A.backup.last?`<span class="pill p-ok">Последняя: ${dt(A.backup.last.at)} ${new Date(A.backup.last.at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}</span>`:''}</h3>
+   <p class="hint" style="margin:0">Каждую ночь после 3:00 сайт присылает на почту для уведомлений${A.mail&&A.mail.to?' (<b>'+esc(A.mail.to)+'</b>)':''} файл со всеми данными: товары, остатки, заказы, счета, клиенты, банки. Если с сервером что-то случится — всё восстанавливается из последнего письма.</p>
+   <label class="radio"><input type="checkbox" id="bk-daily" ${A.backup&&A.backup.daily?'checked':''}> <span>Присылать копию каждый день</span></label>
+   <p class="err" id="bk-err" hidden></p>
+   <div class="acts"><button class="btn primary" type="submit">Сохранить</button><button type="button" class="btn" data-act="bkNow">Прислать копию сейчас</button></div></form>
   <form class="formbox" id="docsForm"><h3>Документы клиентам на почту</h3>
    <p class="hint" style="margin:0">Работает, когда подключена почта и клиент указал свою почту при заказе (у зарегистрированных — подставляется сама).</p>
    <label class="radio"><input type="checkbox" id="d-inv" ${A.docs&&A.docs.autoInvoice?'checked':''}> <span>Сразу после заказа отправлять клиенту <b>счёт на оплату</b></span></label>
@@ -1015,6 +1020,9 @@ document.addEventListener('click',async e=>{
       <div class="seg" role="group" aria-label="Документ"><button type="button" data-act="sdKind" data-v="invoice" aria-pressed="true">Счёт</button><button type="button" data-act="sdKind" data-v="waybill" aria-pressed="false" ${i.shipped?'':'disabled title="Накладная появится после отгрузки"'}>Накладная</button></div>
       <p class="err" id="sd-err" hidden></p>
       <button class="btn primary block" type="submit">Отправить</button></form>`)}
+  else if(a==='bkNow'){t.disabled=true;t.textContent='Отправляю…';
+    try{const r=await api('/api/admin/backup/now',{});await reload(`Копия отправлена (${Math.max(1,Math.round(r.size/1024))} КБ) — проверьте почту`)}
+    catch(e){t.disabled=false;t.textContent='Прислать копию сейчас';showErr('bk-err',e.message)}}
   else if(a==='sdKind'){document.querySelectorAll('[data-act=sdKind]').forEach(b=>b.setAttribute('aria-pressed',b===t))}
   else if(a==='mailPreset'){mailHost=v;if(A.mail)A.mail.host=v;const keep={u:$('#m-user')?.value,t:$('#m-to')?.value};$('#mailForm').outerHTML=mailBox(true);if(keep.u)$('#m-user').value=keep.u;if(keep.t)$('#m-to').value=keep.t}
   else if(a==='mailEdit'){$('#mailBox').outerHTML=mailBox(true)}
@@ -1106,6 +1114,7 @@ document.addEventListener('submit',async e=>{
     const kind=document.querySelector('[data-act=sdKind][aria-pressed=true]').dataset.v;
     try{await api('/api/admin/invoices/send',{id:+f.dataset.id,kind,email:$('#sd-email').value});closeLayer();await reload(kind==='waybill'?'Накладная отправлена':'Счёт отправлен')}
     catch(err){showErr('sd-err',err.message);btn.disabled=false;btn.textContent='Отправить'}}
+  else if(f.id==='bkForm'){run('bk-err','/api/admin/backup',{daily:$('#bk-daily').checked},'Сохранено')}
   else if(f.id==='docsForm'){run(null,'/api/admin/docs',{autoInvoice:$('#d-inv').checked,autoWaybill:$('#d-way').checked},'Сохранено')}
   else if(f.id==='ykForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;
     run('yk-err','/api/admin/yookassa',{shop_id:$('#yk-shop').value,secret:$('#yk-secret').value,bank:$('#yk-bank').value,receipt:$('#yk-receipt').checked},'ЮKassa подключена').finally(()=>{if(btn.isConnected)btn.disabled=false})}

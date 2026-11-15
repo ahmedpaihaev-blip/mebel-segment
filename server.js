@@ -184,6 +184,7 @@ function adminState() {
     txns: db.prepare('SELECT * FROM txns ORDER BY id DESC LIMIT 300').all(),
     invoices: invoiceRows().map(i => ({ ...i, links: docLinks(i) })),
     docs: docsCfg(),
+    backup: { ...backupCfg(), last: getSetting('backup_last') },
     orders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 300').all(),
     customers: db.prepare(`SELECT c.id, c.email, c.name, c.phone, c.company, c.inn, c.created,
         (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status != 'cancelled') AS orders,
@@ -218,17 +219,23 @@ function createInvoice({ client, inn, items, orderId }) {
 
 
 /* ---------- почта (SMTP через SSL, порт 465) ---------- */
-function smtpSend({ host, port, user, pass }, to, subject, html) {
+function smtpSend({ host, port, user, pass }, to, subject, html, files = []) {
   return new Promise((resolve, reject) => {
     const sock = tls.connect({ host, port: Number(port) || 465, servername: host, rejectUnauthorized: process.env.SMTP_TEST_INSECURE !== '1' });
     let buf = '', step = 0, done = false;
     const fail = e => { if (done) return; done = true; sock.destroy(); reject(e instanceof Error ? e : new Error(e)); };
     const timer = setTimeout(() => fail(new Error('почтовый сервер не отвечает')), 20000);
     const b64 = v => Buffer.from(v, 'utf8').toString('base64');
-    const body = b64(html).replace(/.{76}/g, '$&\r\n');
+    const wrap76 = v => v.replace(/.{76}/g, '$&\r\n');
+    const body = wrap76(b64(html));
+    const bnd = 'ms_' + crypto.randomBytes(8).toString('hex');
     const msg = [`From: =?UTF-8?B?${b64('Mebel Segment')}?= <${user}>`, `To: <${to}>`, `Subject: =?UTF-8?B?${b64(subject)}?=`,
       `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomBytes(12).toString('hex')}@${user.split('@')[1] || 'mebel-segment.ru'}>`,
-      'MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64', '', body, '.'].join('\r\n');
+      'MIME-Version: 1.0', ...(files.length ? [
+        `Content-Type: multipart/mixed; boundary="${bnd}"`, '', `--${bnd}`, 'Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64', '', body,
+        ...files.flatMap(f => [`--${bnd}`, `Content-Type: ${f.type || 'application/octet-stream'}; name="${f.name}"`, 'Content-Transfer-Encoding: base64',
+          `Content-Disposition: attachment; filename="${f.name}"`, '', wrap76(f.content.toString('base64'))]), `--${bnd}--`]
+        : ['Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64', '', body]), '.'].join('\r\n');
     const script = [
       [220, `EHLO mebel-segment.ru`], [250, 'AUTH LOGIN'], [334, b64(user)], [334, b64(pass)],
       [235, `MAIL FROM:<${user}>`], [250, `RCPT TO:<${to}>`], [250, 'DATA'], [354, msg], [250, 'QUIT']];
@@ -251,7 +258,7 @@ function smtpSend({ host, port, user, pass }, to, subject, html) {
   });
 }
 const mailCfg = () => { const m = getSetting('mail'); return m && m.host && m.user && m.pass ? m : null; };
-async function mailTo(to, subject, html) { const m = mailCfg(); if (!m) return false; await smtpSend(m, to, subject, html); return true; }
+async function mailTo(to, subject, html, files) { const m = mailCfg(); if (!m) return false; await smtpSend(m, to, subject, html, files); return true; }
 const mailWrap = (title, inner, btn) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#151515">
   <div style="background:#1B1B1B;color:#EDECE8;padding:18px 22px;border-radius:14px 14px 0 0;font-weight:bold;letter-spacing:.06em">MEBEL SEGMENT</div>
   <div style="background:#fff;border:1px solid #e3e1dc;border-top:0;padding:22px;border-radius:0 0 14px 14px;line-height:1.5">
@@ -505,6 +512,35 @@ function autoDoc(kind, invId) {
   if (!inv || !inv.email || !mailCfg() || !docsCfg()[kind === 'invoice' ? 'autoInvoice' : 'autoWaybill']) return;
   sendDoc(kind, invId, inv.email).catch(e => console.error('Документ на почту:', e.message));
 }
+
+
+/* ---------- ежедневная копия базы на почту владельцу ---------- */
+const zlib = require('node:zlib');
+const backupCfg = () => ({ daily: true, ...(getSetting('backup') || {}) });
+async function sendBackup() {
+  const m = mailCfg(); if (!m || !m.to) throw new UserError('Сначала подключите почту: «Настройки» → «Почта».');
+  const tmp = path.join(DATA_DIR, `backup-${process.pid}-${Date.now()}.db`);
+  try {
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); // согласованная копия без остановки сайта
+    const gz = zlib.gzipSync(fs.readFileSync(tmp), { level: 9 });
+    const day = new Date().toLocaleDateString('ru-RU'), stamp = new Date().toISOString().slice(0, 10);
+    const cnt = t => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
+    await smtpSend(m, m.to, `Копия базы Mebel Segment за ${day}`, mailWrap(`Копия базы за ${day}`,
+      `<p>Во вложении — полная копия данных сайта: товары, остатки, заказы, счета, клиенты, банки и настройки.</p>
+       <p style="color:#555">Сейчас в базе: товаров ${db.prepare('SELECT COUNT(*) c FROM products WHERE active = 1').get().c}, заказов ${cnt('orders')}, счетов ${cnt('invoices')}, клиентов ${cnt('customers')}.</p>
+       <p style="color:#8a8984;font-size:13px">Храните эти письма — из любого из них можно восстановить сайт. Фотографии товаров в копию не входят. В файле есть личные данные клиентов: не пересылайте его посторонним.</p>`),
+      [{ name: `mebel-segment-${stamp}.db.gz`, type: 'application/gzip', content: gz }]);
+    setSetting('backup_last', { at: now(), size: gz.length });
+    return { size: gz.length };
+  } finally { fs.rm(tmp, () => {}); }
+}
+setInterval(() => {
+  try {
+    const h = new Date().getHours(), today = new Date().toDateString(), last = getSetting('backup_last');
+    if (h < 3 || !backupCfg().daily || !mailCfg() || (last && new Date(last.at).toDateString() === today)) return;
+    sendBackup().catch(e => console.error('Копия базы:', e.message));
+  } catch (e) { console.error('Копия базы:', e.message); }
+}, 10 * 60 * 1000).unref();
 
 /* ---------- маршруты ---------- */
 const routes = {
@@ -812,6 +848,10 @@ const routes = {
     const to = normEmail(b.email); if (!validEmail(to)) throw new UserError('Укажите почту клиента.');
     await sendDoc(b.kind === 'waybill' ? 'waybill' : 'invoice', posInt(b.id), to);
     return { ok: true };
+  },
+  'POST /api/admin/backup': (b) => { setSetting('backup', { daily: !!b.daily }); return { ok: true }; },
+  'POST /api/admin/backup/now': async () => {
+    try { return await sendBackup(); } catch (e) { if (e instanceof UserError) throw e; throw new UserError('Не получилось отправить копию: ' + e.message + '.'); }
   },
   'POST /api/admin/docs': (b) => { setSetting('docs', { autoInvoice: !!b.autoInvoice, autoWaybill: !!b.autoWaybill }); return { ok: true }; },
   'POST /api/admin/yookassa': async (b) => {
