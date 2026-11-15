@@ -499,7 +499,9 @@ function renderFoot(){
      ${o.phone?`<div><a class="small" href="https://wa.me/${wa}" target="_blank" rel="noopener">Написать в WhatsApp →</a></div>`:''}</div>
    <div><div class="lbl">Почта</div>${o.email?`<a class="big" href="mailto:${esc(o.email)}">${esc(o.email)}</a>`:'<span class="small">—</span>'}</div>
    <div><div class="lbl">Сайт</div><span class="big">mebel-segment.ru</span>
-     ${isApp()?'':`<div style="margin-top:10px"><button class="btn ghost-light small" data-act="install">Установить приложение</button></div>`}<div class="small">© ${new Date().getFullYear()} ${o.name?esc(o.name):'Mebel Segment'}</div></div>
+     ${isApp()?'':`<div style="margin-top:10px"><button class="btn ghost-light small" data-act="install">Установить приложение</button></div>`}<div class="small">© ${new Date().getFullYear()} ${o.name?esc(o.name):'Mebel Segment'}</div>
+     ${o.inn||o.ogrnip?`<div class="small">${o.inn?'ИНН '+esc(o.inn):''}${o.inn&&o.ogrnip?' · ':''}${o.ogrnip?'ОГРНИП '+esc(o.ogrnip):''}</div>`:''}
+     <div class="small" style="margin-top:6px"><a href="/rekvizity" style="text-decoration:underline">Реквизиты, оплата, доставка, возврат, оферта</a></div></div>
   </div>`;
 }
 function updCount(){$('#cartCount').textContent=Object.values(cart).reduce((a,b)=>a+b,0)}
@@ -632,7 +634,7 @@ function checkoutView(errMsg){
    <button class="btn primary block" type="submit">${C&&C.online&&ck.pay==='online'?'Отправить заказ и оплатить':'Отправить заказ'}</button>
    ${wa?`<button class="btn block" type="button" data-act="wa">Отправить в WhatsApp</button>`:''}
    <p class="hint">${me?`Заказ сохранится в вашем личном кабинете (${esc(me.email)}).`:'<a href="#account" data-act="close">Войдите или зарегистрируйтесь</a>, чтобы видеть историю заказов.'}</p>
-   <p class="hint">Нажимая «Отправить», вы соглашаетесь на обработку контактных данных для связи по заказу.</p>
+   <p class="hint">Нажимая «Отправить», вы принимаете условия <a href="/rekvizity#oferta" target="_blank">оферты</a> и соглашаетесь на <a href="/rekvizity#dannye" target="_blank">обработку персональных данных</a>.</p>
   </form>`;
 }
 function modal(html,wide){$('#layer').innerHTML=`<div class="veil" data-act="close"></div><div class="modal${wide?' wide':''}" role="dialog" aria-modal="true">${html}</div>`}

@@ -370,11 +370,61 @@ async function syncPayment(id) {
   return p.status;
 }
 
+
+/* ---------- страница «Реквизиты и условия» (требуется ЮKassa и банками) ---------- */
+function renderInfo() {
+  const o = getOwner(), e = v => h(v || '');
+  const fio = (o.name || '').replace(/^ИП\s*/i, '');
+  const req = [['Продавец', o.name || 'Индивидуальный предприниматель'], ['ИНН', o.inn], ['ОГРНИП', o.ogrnip], ['Адрес', o.addr],
+    ['Телефон', o.phone], ['Почта', o.email], ['Расчётный счёт', o.acc], ['Банк', o.bank], ['БИК', o.bik], ['Корр. счёт', o.ks]].filter(([, v]) => v);
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Реквизиты и условия — Mebel Segment</title><meta name="description" content="Реквизиты продавца, условия оплаты, доставки и возврата, публичная оферта Mebel Segment.">
+<link rel="icon" href="/favicon.png"><style>
+*{box-sizing:border-box}body{margin:0;background:#E8E7E3;color:#151515;font:15px/1.6 Arial,Helvetica,sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:16px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0 20px}
+header img{height:34px}header a{color:#151515;font-weight:bold;text-decoration:none;font-size:14px}
+.card{background:#fff;border-radius:18px;padding:24px 28px;margin-bottom:14px}h1{font-size:28px;margin:0 0 6px}h2{font-size:19px;margin:0 0 10px}
+table{border-collapse:collapse;width:100%}td{padding:7px 0;border-bottom:1px solid #eee;vertical-align:top}td:first-child{color:#666;width:200px;padding-right:12px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0}nav a{border:1.5px solid #151515;border-radius:999px;padding:5px 14px;color:#151515;text-decoration:none;font-size:13px;font-weight:bold}
+ol,ul{padding-left:20px}li{margin:4px 0}.muted{color:#666;font-size:13px}@media(max-width:600px){td:first-child{width:120px}.card{padding:18px}}
+</style></head><body><div class="wrap">
+<header><a href="/"><img src="/logo.png" alt="Mebel Segment"></a><a href="/#catalog">← В каталог</a></header>
+<div class="card"><h1>Реквизиты и условия</h1><p class="muted">Интернет-магазин мебельной фурнитуры mebel-segment.ru</p>
+<nav><a href="#rekvizity">Реквизиты</a><a href="#oplata">Оплата</a><a href="#dostavka">Доставка</a><a href="#vozvrat">Возврат</a><a href="#oferta">Оферта</a><a href="#dannye">Персональные данные</a></nav></div>
+<div class="card" id="rekvizity"><h2>Реквизиты продавца</h2><table>${req.map(([k, v]) => `<tr><td>${k}</td><td>${e(v)}</td></tr>`).join('')}</table></div>
+<div class="card" id="oplata"><h2>Оплата</h2><ul>
+<li><b>По счёту</b> — для организаций и ИП: безналичный перевод на расчётный счёт продавца. Счёт выставляется после оформления заказа.</li>
+<li><b>Онлайн на сайте</b> — банковской картой (Мир, Visa, Mastercard), через СБП или SberPay. Платёж проходит на защищённой странице платёжного сервиса ЮKassa; данные карты продавцу не передаются.</li>
+<li>Цены указаны в рублях, НДС не облагается (продавец применяет УСН). Кассовый чек направляется покупателю на почту или телефон.</li></ul></div>
+<div class="card" id="dostavka"><h2>Доставка и самовывоз</h2><ul>
+<li><b>Самовывоз</b> — ${e(o.addr || 'г. Ставрополь')}, по предварительному согласованию по телефону ${e(o.phone)}.</li>
+<li><b>Доставка</b> по Ставрополю и в другие города России — транспортными компаниями или курьером. Стоимость и срок рассчитываются индивидуально и согласовываются с покупателем до отправки.</li>
+<li>Товар отгружается после подтверждения заказа и оплаты. Позиции «под заказ» — в срок, согласованный с менеджером.</li></ul></div>
+<div class="card" id="vozvrat"><h2>Обмен и возврат</h2><ul>
+<li>Товар надлежащего качества, купленный дистанционно, покупатель-гражданин вправе вернуть в течение 7 дней после получения, если сохранены его товарный вид и потребительские свойства (ст. 26.1 Закона «О защите прав потребителей»).</li>
+<li>При обнаружении брака продавец заменяет товар или возвращает деньги в соответствии с законодательством РФ.</li>
+<li>Деньги возвращаются тем же способом, которым была произведена оплата, в течение 10 дней с момента получения требования.</li>
+<li>Для возврата свяжитесь с нами: ${e(o.phone)}${o.email ? ', ' + e(o.email) : ''}.</li></ul>
+<p class="muted">Для покупателей — юридических лиц и ИП условия возврата определяются договором поставки и Гражданским кодексом РФ.</p></div>
+<div class="card" id="oferta"><h2>Публичная оферта</h2><ol>
+<li>Настоящий документ — предложение ${e(o.name || 'продавца')}${o.inn ? ', ИНН ' + e(o.inn) : ''}${o.ogrnip ? ', ОГРНИП ' + e(o.ogrnip) : ''} (далее — Продавец) заключить договор купли-продажи товаров, представленных на сайте mebel-segment.ru, на изложенных ниже условиях.</li>
+<li>Акцептом оферты является оформление заказа на сайте или оплата выставленного счёта. С момента акцепта договор считается заключённым.</li>
+<li>Наименование, количество и цена товара указываются в заказе и счёте. Цена фиксируется в момент оформления заказа; наличие и сроки подтверждаются Продавцом.</li>
+<li>Оплата производится способами, указанными в разделе «Оплата». Обязанность Продавца по передаче товара возникает после поступления оплаты, если иное не согласовано.</li>
+<li>Право собственности и риск случайной гибели переходят к Покупателю в момент передачи товара Покупателю или перевозчику.</li>
+<li>Обмен и возврат — в соответствии с разделом «Обмен и возврат» и законодательством РФ.</li>
+<li>Споры разрешаются путём переговоров, при недостижении согласия — в порядке, установленном законодательством РФ.</li></ol></div>
+<div class="card" id="dannye"><h2>Обработка персональных данных</h2>
+<p>Оформляя заказ или регистрируясь на сайте, покупатель соглашается на обработку Продавцом своих персональных данных (имя, телефон, почта, адрес доставки, ИНН) в целях исполнения заказа, связи с покупателем и выставления документов, в соответствии с Федеральным законом № 152-ФЗ «О персональных данных». Данные не передаются третьим лицам, кроме случаев, необходимых для доставки и оплаты заказа. Покупатель может отозвать согласие, написав Продавцу${o.email ? ' на ' + e(o.email) : ''}.</p></div>
+<p class="muted" style="text-align:center">© ${new Date().getFullYear()} ${e(o.name || 'Mebel Segment')}${fio ? '' : ''} · mebel-segment.ru</p>
+</div></body></html>`;
+}
+
 /* ---------- маршруты ---------- */
 const routes = {
   'GET /api/catalog': () => ({
     cats: CATS,
-    owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
+    owner: (({ phone, email, name, inn, ogrnip }) => ({ phone, email, name, inn, ogrnip }))(getOwner()),
     online: !!ykCfg(),
     products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo, box, descr FROM products WHERE active = 1 ORDER BY id').all(),
   }),
@@ -723,6 +773,7 @@ function serveAdminPage(res) {
 function serveStatic(req, res, urlPath) {
   let p = decodeURIComponent(urlPath);
   if (p === '/admin' || p === '/admin/') return serveAdminPage(res);
+  if (p === '/rekvizity' || p === '/rekvizity/' || p === '/oferta') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(renderInfo()); }
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, 'Not found', 'text/plain');
