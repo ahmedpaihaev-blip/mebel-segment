@@ -869,8 +869,8 @@ function mailBox(edit){
    <div class="seg" role="group" aria-label="Почта">${Object.entries(MAIL_PRESETS).map(([k,v])=>`<button type="button" data-act="mailPreset" data-v="${k}" aria-pressed="${h===k}">${v[0]}</button>`).join('')}</div>
    ${pr?`<p class="note">Нужен <b>пароль приложения</b> — не обычный пароль от почты. Где взять: ${pr[1]}. <a href="${pr[2]}" target="_blank" rel="noopener">Открыть →</a></p>`:''}
    <div class="fgrid">
-    <label>Ящик, с которого отправлять<input id="m-user" type="email" autocomplete="off" value="${esc(m&&m.user||'')}" placeholder="zakaz@yandex.ru"></label>
-    <label>Пароль приложения<input id="m-pass" type="password" autocomplete="new-password" placeholder="${m&&m.ok?'оставьте пустым, чтобы не менять':'16 символов из настроек почты'}"></label>
+    <label>Ящик, с которого отправлять<input id="m-user" type="email" autocomplete="off" data-lpignore="true" value="${esc(m&&m.user||'')}" placeholder="zakaz@yandex.ru"></label>
+    <label>Пароль приложения <span style="font-weight:500">(вставьте тот, что выдала почта)</span><input id="m-pass" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="${m&&m.ok?'оставьте пустым, чтобы не менять':'например: aB3dE5fG7hJ9kL1mN2pQ'}"></label>
     <label>Куда присылать заказы<input id="m-to" type="email" value="${esc(m&&m.to||'')}" placeholder="можно тот же ящик"></label>
    </div>
    <details><summary class="muted" style="cursor:pointer;font-size:13px">Другая почта</summary><div class="fgrid" style="margin-top:8px"><label>Сервер (SMTP)<input id="m-host" type="text" value="${esc(h)}"></label><label>Порт<input id="m-port" type="number" value="${esc(m&&m.port||465)}"></label></div></details>
