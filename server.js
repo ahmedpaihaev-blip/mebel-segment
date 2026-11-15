@@ -239,7 +239,7 @@ function smtpSend({ host, port, user, pass }, to, subject, html) {
         if (want === undefined) { clearTimeout(timer); done = true; sock.end(); return resolve(); }
         if (code !== want) {
           clearTimeout(timer);
-          return fail(new Error(code === 535 || code === 534 ? 'почта не приняла логин или пароль (нужен пароль приложения, не обычный пароль)' : `почтовый сервер ответил ${code} ${m[3]}`));
+          return fail(new Error((code === 535 || code === 534 ? 'почта не приняла логин или пароль (нужен пароль приложения, не обычный пароль)' : 'почтовый сервер отказал') + `. Ответ сервера: «${code} ${m[3].slice(0, 160)}»`));
         }
         step++; sock.write(send + '\r\n');
       }
@@ -557,7 +557,7 @@ const routes = {
   },
   'POST /api/admin/mail': async (b) => {
     const old = getSetting('mail') || {};
-    const m = { host: str(b.host, 100).toLowerCase(), port: posInt(b.port) || 465, user: normEmail(b.user), pass: String(b.pass || '') || old.pass || '', to: normEmail(b.to) || normEmail(b.user) };
+    const m = { host: str(b.host, 100).toLowerCase(), port: posInt(b.port) || 465, user: normEmail(b.user), pass: String(b.pass || '').replace(/\s+/g, '') || old.pass || '', to: normEmail(b.to) || normEmail(b.user) };
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(m.host)) throw new UserError('Укажите почтовый сервер, например smtp.yandex.ru.');
     if (!validEmail(m.user)) throw new UserError('Укажите адрес ящика, с которого отправлять письма.');
     if (!m.pass) throw new UserError('Укажите пароль приложения для этого ящика.');
