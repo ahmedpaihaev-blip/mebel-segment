@@ -625,6 +625,7 @@ function checkoutView(errMsg){
    <label>${ck.kind==='company'?'Название организации или ИП':'Имя'} *<input id="c-name" type="text" required autocomplete="name" value="${v('c-name',me?(ck.kind==='company'&&me.company?me.company:me.name):'')}"></label>
    <label>Телефон *<input id="c-phone" type="tel" required placeholder="+7 900 000-00-00" autocomplete="tel" value="${v('c-phone',me?me.phone:'')}"></label>
    ${ck.kind==='company'?`<label>ИНН<input id="c-inn" type="text" inputmode="numeric" value="${v('c-inn',me?me.inn:'')}"></label>`:''}
+   <label>Почта <span style="font-weight:500">— пришлём счёт и накладную</span><input id="c-email" type="email" autocomplete="email" placeholder="необязательно" value="${v('c-email',me?me.email:'')}"></label>
    <div class="seg" role="group" aria-label="Получение"><button type="button" data-act="ck" data-k="delivery" data-v="pickup" aria-pressed="${ck.delivery==='pickup'}">Самовывоз</button><button type="button" data-act="ck" data-k="delivery" data-v="delivery" aria-pressed="${ck.delivery==='delivery'}">Доставка</button></div>
    <label>${ck.delivery==='delivery'?'Адрес доставки и комментарий':'Комментарий'}<textarea id="c-comment" rows="3">${v('c-comment')}</textarea></label>
    ${C&&C.online?`<div class="seg" role="group" aria-label="Оплата"><button type="button" data-act="ck" data-k="pay" data-v="invoice" aria-pressed="${ck.pay==='invoice'}">По счёту</button><button type="button" data-act="ck" data-k="pay" data-v="online" aria-pressed="${ck.pay==='online'}">Онлайн: карта, СБП</button></div>
@@ -641,7 +642,7 @@ function modal(html,wide){$('#layer').innerHTML=`<div class="veil" data-act="clo
 async function checkout(f){
   const btn=f.querySelector('button[type=submit]');btn.disabled=true;
   try{
-    const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn')?.value||'',comment:$('#c-comment').value,kind:ck.kind,delivery:ck.delivery,pay:C&&C.online?ck.pay:'invoice',
+    const r=await api('/api/orders',{name:$('#c-name').value,phone:$('#c-phone').value,inn:$('#c-inn')?.value||'',email:$('#c-email')?.value||'',comment:$('#c-comment').value,kind:ck.kind,delivery:ck.delivery,pay:C&&C.online?ck.pay:'invoice',
       items:cartIds().map(id=>({pid:+id,qty:cart[id]}))});
     lastOrder=r;cart={};saveCart();
     if(r.pay_url){modal('<div class="m-head"><h2 class="caps">Переходим к оплате…</h2></div><div class="done"><b>Заказ №'+r.order+' принят</b><span>Сейчас откроется страница оплаты ЮKassa.</span></div>');location.href=r.pay_url;return}
@@ -707,7 +708,7 @@ function accountView(){
      <div class="ord-top"><div><b>Заказ №${o.id}</b> <span class="muted num">от ${dt(o.date)}</span></div>
       <div class="acts">${i&&i.status!=='cancelled'?(i.status==='paid'?'<span class="pill p-ok">Оплачен</span>':'<span class="pill p-warn">Ждёт оплаты</span>'):''} <span class="pill ${st[1]}">${st[0]}</span></div></div>
      ${i?`<ul class="ord-items">${i.items.map(x=>`<li><span>${esc(x.name)} <span class="muted mono">${esc(x.sku)}</span></span><span class="num">${x.qty} ${esc(x.unit)} × ${rub(x.price)}</span></li>`).join('')}</ul>`:''}
-     <div class="ord-bot"><b class="num ord-sum">${i?rub(i.sum):''}</b><div class="acts">${i?`<button class="btn small" data-act="uInv" data-id="${o.id}">Счёт №${i.id}</button>`:''}${i&&i.status==='issued'&&U.online?`<button class="btn small primary" data-act="uPay" data-id="${i.id}">Оплатить онлайн</button>`:''}${i?`<button class="btn small ${i&&i.status==='issued'&&U.online?'':'primary'}" data-act="uRepeat" data-id="${o.id}">Повторить заказ</button>`:''}</div></div>
+     <div class="ord-bot"><b class="num ord-sum">${i?rub(i.sum):''}</b><div class="acts">${i&&i.links?`<a class="btn small" href="${esc(i.links.invoice)}" target="_blank" rel="noopener">Счёт №${i.id}</a>`:''}${i&&i.links&&i.links.waybill?`<a class="btn small" href="${esc(i.links.waybill)}" target="_blank" rel="noopener">Накладная</a>`:''}${i&&i.status==='issued'&&U.online?`<button class="btn small primary" data-act="uPay" data-id="${i.id}">Оплатить онлайн</button>`:''}${i?`<button class="btn small ${i&&i.status==='issued'&&U.online?'':'primary'}" data-act="uRepeat" data-id="${o.id}">Повторить заказ</button>`:''}</div></div>
    </article>`}).join(''):'<div class="ord empty">Заказов пока нет. Выберите товары в <a href="#catalog">каталоге</a> — заказ появится здесь.</div>'}
    <div class="cols" style="margin-top:28px">
     <form class="formbox" id="uProfile"><h3>Мои данные</h3>
@@ -780,7 +781,7 @@ invoices(){
   return`<div class="panel-head"><h2>Счета</h2><button class="btn primary" data-act="toggle" data-v="invForm">Новый счёт</button></div>
   <form class="formbox" id="invForm" hidden>
     <h3>Новый счёт на оплату</h3>
-    <div class="fgrid"><label>Покупатель<input id="i-client" type="text" placeholder="ООО «Мебель Мастер»"></label><label>ИНН покупателя<input id="i-inn" type="text" inputmode="numeric"></label></div>
+    <div class="fgrid"><label>Покупатель<input id="i-client" type="text" placeholder="ООО «Мебель Мастер»"></label><label>ИНН покупателя<input id="i-inn" type="text" inputmode="numeric"></label><label>Почта покупателя <span style="font-weight:500">(пришлём счёт)</span><input id="i-email" type="email" placeholder="необязательно"></label></div>
     <div class="lines" id="i-lines" style="display:grid;gap:8px">${lineRow(false)}</div>
     <div class="acts"><button type="button" class="btn small" data-act="addrow" data-v="i-lines" data-cost="0">Добавить строку</button></div>
     <p class="err" id="i-err" hidden></p>
@@ -788,7 +789,8 @@ invoices(){
   </form>
   ${A.invoices.length?`<div class="tbl-wrap"><table><thead><tr><th>№</th><th>Дата</th><th>Покупатель</th><th class="r">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>
   ${A.invoices.map(i=>`<tr><td class="num">${i.id}</td><td class="num">${dt(i.date)}</td><td>${esc(i.client)}</td><td class="r num">${rub(i.sum)}</td><td>${invPill(i)}</td>
-   <td><div class="acts"><button class="btn small" data-act="viewInv" data-id="${i.id}">Открыть</button>
+   <td><div class="acts"><a class="btn small" href="${esc(i.links.invoice)}" target="_blank" rel="noopener">Счёт</a>${i.links.waybill?`<a class="btn small" href="${esc(i.links.waybill)}" target="_blank" rel="noopener">Накладная</a>`:''}
+   <button class="btn small" data-act="sendDoc" data-id="${i.id}" title="${esc(i.email||'')}">На почту${i.email?' ✓':''}</button>
    ${i.status==='issued'?`<button class="btn small" data-act="payInv" data-id="${i.id}">Оплачен</button>`:''}
    ${i.status!=='cancelled'&&!i.shipped?`<button class="btn small" data-act="ship" data-id="${i.id}">Отгрузить</button>`:''}
    ${i.status==='issued'&&!i.shipped?`<button class="btn small danger" data-act="cancelInv" data-id="${i.id}">Отменить</button>`:''}</div></td></tr>`).join('')}
@@ -867,6 +869,11 @@ settings(){
    ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
    ${f('phone','Телефон на сайте и WhatsApp','+7 900 000-00-00')}${f('email','Почта на сайте')}</div>
    <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+  <form class="formbox" id="docsForm"><h3>Документы клиентам на почту</h3>
+   <p class="hint" style="margin:0">Работает, когда подключена почта и клиент указал свою почту при заказе (у зарегистрированных — подставляется сама).</p>
+   <label class="radio"><input type="checkbox" id="d-inv" ${A.docs&&A.docs.autoInvoice?'checked':''}> <span>Сразу после заказа отправлять клиенту <b>счёт на оплату</b></span></label>
+   <label class="radio"><input type="checkbox" id="d-way" ${A.docs&&A.docs.autoWaybill?'checked':''}> <span>При отгрузке отправлять <b>товарную накладную</b></span></label>
+   <div class="acts"><button class="btn primary" type="submit">Сохранить</button><a class="btn" href="/rekvizity" target="_blank" rel="noopener">Страница реквизитов</a></div></form>
   ${ykBox()}
   ${mailBox()}
   ${tgBox()}
@@ -976,7 +983,7 @@ document.addEventListener('click',async e=>{
   else if(a==='dec'){cart[id]--;if(cart[id]<=0)delete cart[id];saveCart();drawCart();updCount();renderGrid()}
   else if(a==='rm'){delete cart[id];saveCart();drawCart();updCount();renderGrid()}
   else if(a==='checkout'){modal(checkoutView())}
-  else if(a==='ck'){ck[t.dataset.k]=v;const keep={};['c-name','c-phone','c-inn','c-comment'].forEach(k=>{if($('#'+k))keep[k]=$('#'+k).value});modal(checkoutView());for(const k in keep)if($('#'+k))$('#'+k).value=keep[k]}
+  else if(a==='ck'){ck[t.dataset.k]=v;const keep={};['c-name','c-phone','c-inn','c-email','c-comment'].forEach(k=>{if($('#'+k))keep[k]=$('#'+k).value});modal(checkoutView());for(const k in keep)if($('#'+k))$('#'+k).value=keep[k]}
   else if(a==='wa'){const o=owner();window.open(`https://wa.me/${digits(o.phone)}?text=${encodeURIComponent(orderText($('#c-name')?.value.trim(),$('#c-phone')?.value.trim()))}`,'_blank','noopener')}
   else if(a==='install'){installApp()}
   else if(a==='accTab'){accTab=v;$('#app').innerHTML=accountView()}
@@ -999,6 +1006,16 @@ document.addEventListener('click',async e=>{
   else if(a==='ykEdit'){$('#ykBox').outerHTML=ykBox(true)}
   else if(a==='ykCancel'){$('#ykForm').outerHTML=ykBox()}
   else if(a==='copyHook'){const v=location.origin+'/api/yookassa/webhook';navigator.clipboard.writeText(v).then(()=>toast('Адрес скопирован'),()=>toast(v))}
+  else if(a==='sendDoc'){const i=A.invoices.find(x=>x.id==id);
+    modal(`<div class="m-head"><h2 class="caps">Отправить на почту</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
+     <p style="margin:0">${esc(i.client)} · счёт №${i.id} · <b class="num">${rub(i.sum)}</b></p>
+     ${!A.mail||!A.mail.ok?'<p class="note">Сначала подключите почту: «Настройки» → «Почта».</p>':''}
+     <form class="stack" id="sendForm" data-id="${i.id}">
+      <label>Почта клиента<input id="sd-email" type="email" required value="${esc(i.email||'')}"></label>
+      <div class="seg" role="group" aria-label="Документ"><button type="button" data-act="sdKind" data-v="invoice" aria-pressed="true">Счёт</button><button type="button" data-act="sdKind" data-v="waybill" aria-pressed="false" ${i.shipped?'':'disabled title="Накладная появится после отгрузки"'}>Накладная</button></div>
+      <p class="err" id="sd-err" hidden></p>
+      <button class="btn primary block" type="submit">Отправить</button></form>`)}
+  else if(a==='sdKind'){document.querySelectorAll('[data-act=sdKind]').forEach(b=>b.setAttribute('aria-pressed',b===t))}
   else if(a==='mailPreset'){mailHost=v;if(A.mail)A.mail.host=v;const keep={u:$('#m-user')?.value,t:$('#m-to')?.value};$('#mailForm').outerHTML=mailBox(true);if(keep.u)$('#m-user').value=keep.u;if(keep.t)$('#m-to').value=keep.t}
   else if(a==='mailEdit'){$('#mailBox').outerHTML=mailBox(true)}
   else if(a==='mailCancel'){$('#mailForm').outerHTML=mailBox()}
@@ -1081,10 +1098,15 @@ document.addEventListener('submit',async e=>{
     return;
   }
   const run=async(errId,url,body,msg)=>{try{await api(url,body);await reload(msg)}catch(err){if(err.status===401){A=null;render()}else if(errId)showErr(errId,err.message);else toast(err.message)}};
-  if(f.id==='invForm')run('i-err','/api/admin/invoices',{client:$('#i-client').value,inn:$('#i-inn').value,items:readLines('i-lines',false)},'Счёт выставлен');
+  if(f.id==='invForm')run('i-err','/api/admin/invoices',{client:$('#i-client').value,inn:$('#i-inn').value,email:$('#i-email').value,items:readLines('i-lines',false)},'Счёт выставлен');
   else if(f.id==='pForm')run('p-err','/api/admin/products',{id:$('#p-id').value||undefined,sku:$('#p-sku').value,name:$('#p-name').value,cat:$('#p-cat').value,unit:$('#p-unit').value,price:$('#p-price').value,box:$('#p-box').value,descr:$('#p-descr').value},'Товар сохранён');
   else if(f.id==='rForm')run('r-err','/api/admin/receipts',{supplier:$('#r-sup').value,bank:$('#r-bank').value,items:readLines('r-lines',true)},'Приход проведён, остатки увеличены');
   else if(f.id==='tForm')run('t-err','/api/admin/txns',{bank:$('#t-bank').value,text:$('#t-text').value,amount:$('#t-amount').value},'Операция добавлена');
+  else if(f.id==='sendForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;btn.textContent='Отправляю…';
+    const kind=document.querySelector('[data-act=sdKind][aria-pressed=true]').dataset.v;
+    try{await api('/api/admin/invoices/send',{id:+f.dataset.id,kind,email:$('#sd-email').value});closeLayer();await reload(kind==='waybill'?'Накладная отправлена':'Счёт отправлен')}
+    catch(err){showErr('sd-err',err.message);btn.disabled=false;btn.textContent='Отправить'}}
+  else if(f.id==='docsForm'){run(null,'/api/admin/docs',{autoInvoice:$('#d-inv').checked,autoWaybill:$('#d-way').checked},'Сохранено')}
   else if(f.id==='ykForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;
     run('yk-err','/api/admin/yookassa',{shop_id:$('#yk-shop').value,secret:$('#yk-secret').value,bank:$('#yk-bank').value,receipt:$('#yk-receipt').checked},'ЮKassa подключена').finally(()=>{if(btn.isConnected)btn.disabled=false})}
   else if(f.id==='mailForm'){const btn=f.querySelector('button[type=submit]');btn.disabled=true;btn.textContent='Отправляю проверку…';
