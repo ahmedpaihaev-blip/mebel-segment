@@ -13,6 +13,17 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Mebel Segment">
+<script>
+/* по адресу /admin — отдельное приложение «MS Кабинет» со своей иконкой */
+if(location.pathname==='/admin'){
+  document.querySelector('link[rel=manifest]').href='/manifest-admin.webmanifest';
+  document.querySelector('link[rel=apple-touch-icon]').href='/admin-apple-touch-icon.png';
+  document.querySelector('meta[name=apple-mobile-web-app-title]').content='MS Кабинет';
+  document.querySelector('meta[name=theme-color]').content='#EDECE8';
+  document.querySelector('meta[name=apple-mobile-web-app-status-bar-style]').content='default';
+  document.title='MS Кабинет';
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800;900&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -404,7 +415,7 @@ async function api(url,body){
   if(!r.ok){const e=new Error(data.error||'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.');e.status=r.status;throw e}
   return data;
 }
-const isAdminRoute=()=>location.hash==='#admin';
+const isAdminRoute=()=>location.hash==='#admin'||(location.pathname==='/admin'&&(!location.hash||location.hash==='#'));
 const isAccountRoute=()=>location.hash==='#account';
 async function loadMe(){try{U=await api('/api/account/me')}catch(e){U=null}updAcc()}
 function updAcc(){$('#accTxt').textContent=U?'Кабинет':'Войти';$('#accBtn').classList.toggle('on',!!U)}
@@ -421,7 +432,7 @@ async function installApp(){
   if(installEvt){installEvt.prompt();const r=await installEvt.userChoice;installEvt=null;if(r.outcome==='accepted')toast('Устанавливаем…');return}
   const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
   modal(`<div class="m-head"><h2 class="caps">Установить приложение</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
-   <div class="app-ico"><img src="/icon-192.png" alt=""><div><b>Mebel Segment</b><div class="muted">Иконка на экране телефона, открывается как приложение</div></div></div>
+   ${location.pathname==='/admin'?'<div class="app-ico"><img src="/admin-icon-192.png" alt=""><div><b>MS Кабинет</b><div class="muted">Отдельная иконка для вашего кабинета — сразу открывает счета, склад и банки</div></div></div>':'<div class="app-ico"><img src="/icon-192.png" alt=""><div><b>Mebel Segment</b><div class="muted">Иконка на экране телефона, открывается как приложение</div></div></div>'}
    ${ios?`<ol class="steps-list"><li>Откройте сайт в <b>Safari</b>.</li><li>Нажмите кнопку <b>«Поделиться»</b> — квадрат со стрелкой вверх внизу экрана.</li><li>Выберите <b>«На экран „Домой“»</b> и нажмите <b>«Добавить»</b>.</li></ol>`
    :`<ol class="steps-list"><li>Откройте сайт в <b>Chrome</b> или <b>Яндекс Браузере</b>.</li><li>Нажмите меню <b>⋮</b> вверху справа.</li><li>Выберите <b>«Установить приложение»</b> или <b>«Добавить на главный экран»</b>.</li></ol>`}
    <button class="btn primary block" data-act="close">Понятно</button>`);
