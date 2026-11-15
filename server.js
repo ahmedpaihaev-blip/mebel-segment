@@ -169,6 +169,7 @@ function adminState() {
   const recItems = db.prepare('SELECT ri.*, p.sku, p.name FROM receipt_items ri JOIN products p ON p.id = ri.product_id WHERE receipt_id = ?');
   return {
     owner: getOwner(),
+    tg: (t => t ? { bot: t.bot || '', linked: !!t.chat_id, chat: t.chat_name || '' } : null)(getSetting('tg')),
     cats: CATS,
     products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all(),
     banks: db.prepare('SELECT * FROM banks ORDER BY id').all(),
@@ -205,6 +206,38 @@ function createInvoice({ client, inn, items, orderId }) {
   return Number(inv.lastInsertRowid);
 }
 
+
+/* ---------- уведомления в Telegram ---------- */
+const SITE_URL = process.env.SITE_URL || 'https://mebel-segment.ru';
+const getSetting = k => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(k); return r ? JSON.parse(r.value) : null; };
+const setSetting = (k, v) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, JSON.stringify(v));
+const h = v => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const rubs = n => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+async function tgCall(token, method, body) {
+  const r = await fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${token}/${method}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(10000) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) throw new Error(j.description || `Telegram ответил ${r.status}`);
+  return j.result;
+}
+async function tgSend(text, link) {
+  const t = getSetting('tg');
+  if (!t || !t.token || !t.chat_id) return false;
+  await tgCall(t.token, 'sendMessage', { chat_id: t.chat_id, text, parse_mode: 'HTML', disable_web_page_preview: true,
+    reply_markup: link ? { inline_keyboard: [[{ text: link.text, url: link.url }]] } : undefined });
+  return true;
+}
+function notify(text, link) { tgSend(text, link).catch(e => console.error('Telegram:', e.message)); }
+function notifyOrder(orderId) {
+  const o = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId); if (!o) return;
+  const [inv] = invoiceRows('WHERE order_id = ?', o.id);
+  const c = o.customer_id ? db.prepare('SELECT email FROM customers WHERE id = ?').get(o.customer_id) : null;
+  const lines = (inv ? inv.items : []).map(x => `• ${h(x.name)} — ${x.qty} ${h(x.unit)} × ${rubs(x.price)}`);
+  const head = [`🛒 <b>Новый заказ №${o.id}</b> — <b>${rubs(inv ? inv.sum : 0)}</b>`, `👤 ${h(o.client)}${c ? ` (кабинет: ${h(c.email)})` : ''}`,
+    `📞 ${h(o.phone)}`, o.inn ? `🏢 ИНН ${h(o.inn)}` : '', o.comment ? `💬 ${h(o.comment)}` : ''].filter(Boolean);
+  notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' });
+}
+
 /* ---------- маршруты ---------- */
 const routes = {
   'GET /api/catalog': () => ({
@@ -212,7 +245,7 @@ const routes = {
     owner: (({ phone, email }) => ({ phone, email }))(getOwner()),
     products: db.prepare('SELECT id, sku, name, cat, unit, price, stock, photo, box, descr FROM products WHERE active = 1 ORDER BY id').all(),
   }),
-  'POST /api/orders': (b, req) => tx(() => {
+  'POST /api/orders': (b, req) => { const r = tx(() => {
     const me = customerOf(req);
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
     if (!client || phone.replace(/\D/g, '').length < 10) throw new UserError('Укажите имя и телефон из 10–11 цифр.');
@@ -223,7 +256,7 @@ const routes = {
     const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id) VALUES (?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
-  }),
+  }); notifyOrder(r.order); return r; },
   'POST /api/login': (b, req, res) => {
     const lim = tooMany(req, 'admin:');
     if (!ADMIN_PASSWORD || !safeEqual(str(b.password, 200), ADMIN_PASSWORD)) { lim.fail(); throw new UserError('Неверный пароль.', 401); }
@@ -244,6 +277,7 @@ const routes = {
       .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now()).lastInsertRowid);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     linkOrders(c); newSession(res, req, 'customer', id);
+    notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' });
     return { ok: true };
   },
   'POST /api/account/login': (b, req, res) => {
@@ -409,6 +443,29 @@ const routes = {
     db.prepare('INSERT INTO txns (date, bank_id, text, amount) VALUES (?, ?, ?, ?)').run(now(), bank.id, text, r2(amount));
     return { ok: true };
   }),
+  'POST /api/admin/telegram': async (b) => {
+    const token = str(b.token, 100);
+    if (!/^\d{5,}:[\w-]{20,}$/.test(token)) throw new UserError('Это не похоже на токен бота. Скопируйте его из сообщения @BotFather целиком.');
+    let me; try { me = await tgCall(token, 'getMe'); } catch (e) { throw new UserError('Telegram не принял токен: ' + e.message); }
+    setSetting('tg', { token, bot: me.username });
+    return { bot: me.username };
+  },
+  'POST /api/admin/telegram/link': async () => {
+    const t = getSetting('tg'); if (!t || !t.token) throw new UserError('Сначала сохраните токен бота.');
+    let ups; try { ups = await tgCall(t.token, 'getUpdates', { limit: 50, allowed_updates: ['message'] }); } catch (e) { throw new UserError('Не удалось связаться с Telegram: ' + e.message); }
+    const msg = ups.map(u => u.message).filter(m => m && m.chat).pop();
+    if (!msg) throw new UserError(`Откройте бота @${t.bot} в Telegram, нажмите «Start» (или напишите ему любое сообщение) и нажмите «Привязать» ещё раз.`);
+    const chat = msg.chat, name = chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(' ') || chat.username || 'чат';
+    setSetting('tg', { ...t, chat_id: chat.id, chat_name: name });
+    await tgSend('✅ <b>Готово!</b> Сюда будут приходить новые заказы и регистрации с сайта mebel-segment.ru.');
+    return { chat: name };
+  },
+  'POST /api/admin/telegram/test': async () => {
+    try { if (!(await tgSend('🔔 Проверка: уведомления Mebel Segment работают.'))) throw new Error('бот не привязан'); }
+    catch (e) { throw new UserError('Не отправилось: ' + e.message); }
+    return { ok: true };
+  },
+  'POST /api/admin/telegram/off': () => { db.prepare("DELETE FROM settings WHERE key = 'tg'").run(); return { ok: true }; },
   'POST /api/admin/owner': (b) => {
     const o = {}; for (const k of Object.keys(DEFAULT_OWNER)) o[k] = str(b[k], 300);
     db.prepare("INSERT INTO settings (key, value) VALUES ('owner', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(o));

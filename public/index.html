@@ -830,6 +830,7 @@ settings(){
    ${f('bank','Банк для оплаты','АО «Альфа-Банк»')}${f('acc','Расчётный счёт')}${f('bik','БИК')}${f('ks','Корр. счёт')}
    ${f('phone','Телефон на сайте и WhatsApp','+7 900 000-00-00')}${f('email','Почта на сайте')}</div>
    <div class="acts"><button class="btn primary" type="submit">Сохранить</button></div></form>
+  ${tgBox()}
   <div class="formbox"><h3>Банки и текущие остатки</h3>
    <p class="muted" style="margin:0;font-size:13px">Впишите, сколько сейчас денег на каждом счёте. Разница запишется как корректировка.</p>
    ${A.banks.map(b=>`<form class="inline-form" data-bank="${b.id}"><label>Банк<input class="b-name" type="text" value="${esc(b.name)}"></label>
@@ -840,6 +841,23 @@ settings(){
   </div>`;
 }
 };
+function tgBox(){
+  const t=A.tg;
+  if(t&&t.linked)return`<div class="formbox"><h3>Уведомления в Telegram <span class="pill p-ok">Работают</span></h3>
+   <p style="margin:0">Бот <b>@${esc(t.bot)}</b> присылает новые заказы и регистрации клиентов в чат «${esc(t.chat)}».</p>
+   <div class="acts"><button class="btn" data-act="tgTest">Отправить проверку</button><button class="btn danger" data-act="tgOff">Отключить</button></div></div>`;
+  return`<form class="formbox" id="tgForm"><h3>Уведомления в Telegram</h3>
+   <p class="hint" style="margin:0">Новые заказы и регистрации будут сразу приходить вам в Telegram.</p>
+   <ol class="steps-list">
+    <li>В Telegram откройте <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a>, отправьте <span class="mono">/newbot</span>.</li>
+    <li>Придумайте имя (например, <i>Mebel Segment заказы</i>) и адрес, который заканчивается на <span class="mono">bot</span>.</li>
+    <li>BotFather пришлёт <b>токен</b> — длинную строку вида <span class="mono">123456:ABC…</span>. Вставьте её ниже и нажмите «Сохранить».</li>
+    ${t&&t.bot?`<li>Откройте своего бота <a href="https://t.me/${esc(t.bot)}" target="_blank" rel="noopener"><b>@${esc(t.bot)}</b></a> и нажмите <b>«Start»</b>.</li><li>Вернитесь сюда и нажмите <b>«Привязать»</b>.</li>`:'<li>Потом откройте своего бота, нажмите «Start» и вернитесь сюда.</li>'}
+   </ol>
+   ${t&&t.bot?`<div class="acts"><button type="button" class="btn primary" data-act="tgLink">Привязать</button><a class="btn" href="https://t.me/${esc(t.bot)}" target="_blank" rel="noopener">Открыть @${esc(t.bot)}</a><button type="button" class="btn danger" data-act="tgOff">Сменить бота</button></div>`
+   :`<div class="inline-form" style="grid-template-columns:minmax(0,1fr) auto"><label>Токен бота<input id="tg-token" type="text" autocomplete="off" spellcheck="false" placeholder="123456789:AA…"></label><button class="btn primary" type="submit">Сохранить</button></div>`}
+   <p class="err" id="tg-err" hidden></p></form>`;
+}
 function invoiceDoc(i,o=A.owner){
   return`<div class="m-head"><h2 class="caps">Счёт №${i.id}</h2><button class="x" data-act="close" aria-label="Закрыть">×</button></div>
   ${!o.name?'<p class="note">Реквизиты не заполнены. Откройте «Настройки».</p>':''}
@@ -889,6 +907,12 @@ document.addEventListener('click',async e=>{
        <div class="done"><span class="muted">Временный пароль</span><b class="mono" style="font-size:22px;letter-spacing:.08em;user-select:all">${esc(r.password)}</b></div>
        <p class="hint">Передайте пароль клиенту. Он войдёт с ним и сможет сменить его в личном кабинете. Пароль показывается один раз.</p>
        <button class="btn primary block" data-act="close">Готово</button>`)}catch(e){toast(e.message)}}
+  else if(a==='tgLink'||a==='tgTest'||a==='tgOff'){
+    if(a==='tgOff'){const k='tgoff';if(!armed.has(k)){armed.add(k);t.textContent='Точно?';setTimeout(()=>{armed.delete(k);if(t.isConnected)t.textContent='Отключить'},4000);return}armed.delete(k)}
+    t.disabled=true;
+    try{const r=await api('/api/admin/telegram/'+{tgLink:'link',tgTest:'test',tgOff:'off'}[a],{});
+      await reload({tgLink:`Привязано: ${r.chat}. Проверьте Telegram`,tgTest:'Проверка отправлена',tgOff:'Уведомления отключены'}[a])}
+    catch(e){t.disabled=false;const el=$('#tg-err');if(el){el.hidden=false;el.textContent=e.message}else toast(e.message)}}
   else if(a==='tab'){tab=v;$('#app').innerHTML=adminView()}
   else if(a==='logout'){await api('/api/logout',{}).catch(()=>{});A=null;location.hash='top';render()}
   else if(a==='toggle'){const f=$('#'+v);f.hidden=!f.hidden}
@@ -961,6 +985,7 @@ document.addEventListener('submit',async e=>{
   else if(f.id==='pForm')run('p-err','/api/admin/products',{id:$('#p-id').value||undefined,sku:$('#p-sku').value,name:$('#p-name').value,cat:$('#p-cat').value,unit:$('#p-unit').value,price:$('#p-price').value,box:$('#p-box').value,descr:$('#p-descr').value},'Товар сохранён');
   else if(f.id==='rForm')run('r-err','/api/admin/receipts',{supplier:$('#r-sup').value,bank:$('#r-bank').value,items:readLines('r-lines',true)},'Приход проведён, остатки увеличены');
   else if(f.id==='tForm')run('t-err','/api/admin/txns',{bank:$('#t-bank').value,text:$('#t-text').value,amount:$('#t-amount').value},'Операция добавлена');
+  else if(f.id==='tgForm'){const btn=f.querySelector('button[type=submit]');if(btn)btn.disabled=true;run('tg-err','/api/admin/telegram',{token:$('#tg-token').value.trim()},'Бот сохранён. Теперь нажмите «Start» в боте').finally(()=>{if(btn)btn.disabled=false})}
   else if(f.id==='oForm'){const b={};for(const k of Object.keys(A.owner))b[k]=$('#o-'+k)?.value??'';C=null;run(null,'/api/admin/owner',b,'Сохранено')}
   else if(f.dataset.bank!==undefined)run(null,'/api/admin/banks',{id:f.dataset.bank||undefined,name:f.querySelector('.b-name').value,acc:f.querySelector('.b-acc').value,balance:f.dataset.bank?f.querySelector('.b-bal').value:undefined},'Банк сохранён');
 });
