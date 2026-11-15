@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+// у многих VPS нет IPv6-связи: сначала пробуем IPv4, иначе запросы наружу (Telegram) обрываются
+require('node:dns').setDefaultResultOrder('ipv4first');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -214,8 +216,14 @@ const setSetting = (k, v) => db.prepare('INSERT INTO settings (key, value) VALUE
 const h = v => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const rubs = n => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
 async function tgCall(token, method, body) {
-  const r = await fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${token}/${method}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(10000) });
+  let r;
+  try { r = await fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${token}/${method}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(10000) }); }
+  catch (e) {
+    const why = e.name === 'TimeoutError' ? 'нет ответа 10 секунд' : (e.cause && (e.cause.code || e.cause.message)) || e.message;
+    console.error('Telegram недоступен:', why);
+    throw new Error(`сервер сайта не может связаться с Telegram (${why}). Возможно, провайдер сервера блокирует api.telegram.org`);
+  }
   const j = await r.json().catch(() => ({}));
   if (!j.ok) throw new Error(j.description || `Telegram ответил ${r.status}`);
   return j.result;
@@ -446,7 +454,7 @@ const routes = {
   'POST /api/admin/telegram': async (b) => {
     const token = str(b.token, 100);
     if (!/^\d{5,}:[\w-]{20,}$/.test(token)) throw new UserError('Это не похоже на токен бота. Скопируйте его из сообщения @BotFather целиком.');
-    let me; try { me = await tgCall(token, 'getMe'); } catch (e) { throw new UserError('Telegram не принял токен: ' + e.message); }
+    let me; try { me = await tgCall(token, 'getMe'); } catch (e) { throw new UserError(/связаться/.test(e.message) ? 'Не получилось: ' + e.message + '.' : 'Telegram не принял токен: ' + e.message); }
     setSetting('tg', { token, bot: me.username });
     return { bot: me.username };
   },
