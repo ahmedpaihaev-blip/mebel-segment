@@ -67,10 +67,22 @@ systemctl daemon-reload
 systemctl enable mebel-segment >/dev/null
 systemctl restart mebel-segment
 
+# шрифты сайта храним на своём сервере, а не берём у Google (152-ФЗ: данные посетителей не уходят за рубеж)
+FONTS="$APP/public/fonts"; mkdir -p "$FONTS"
+for f in "manrope/Manrope[wght].ttf:Manrope.ttf" "unbounded/Unbounded[wght].ttf:Unbounded.ttf" "jetbrainsmono/JetBrainsMono[wght].ttf:JetBrainsMono.ttf"; do
+  src="${f%%:*}"; dst="${f##*:}"
+  [ -s "$FONTS/$dst" ] || curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/$(echo "$src" | sed 's/\[/%5B/;s/\]/%5D/')" -o "$FONTS/$dst" \
+    || { rm -f "$FONTS/$dst"; echo "Не скачался шрифт $dst — сайт покажет системный шрифт."; }
+done
+
 echo "== 5/5 Домен и HTTPS"
 cat > /etc/caddy/Caddyfile <<CADDY
 $DOMAIN, www.$DOMAIN {
-	encode gzip
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
 	reverse_proxy 127.0.0.1:3000
 }
 CADDY
@@ -86,11 +98,16 @@ UPD
 chmod +x /usr/local/bin/mebel-update
 
 # ежедневная копия базы, хранится 30 дней
+# (копия делается средствами SQLite — согласованно, вместе с последними изменениями; плюс архив фото товаров)
 cat > /etc/cron.daily/mebel-segment-backup <<'BK'
 #!/bin/sh
-mkdir -p /var/backups/mebel-segment
-cp /var/lib/mebel-segment/shop.db "/var/backups/mebel-segment/shop-$(date +%F).db" 2>/dev/null
-find /var/backups/mebel-segment -name 'shop-*.db' -mtime +30 -delete
+D=/var/backups/mebel-segment; S=/var/lib/mebel-segment; F="$D/shop-$(date +%F).db"
+mkdir -p "$D" && chmod 700 "$D"
+rm -f "$F"
+node --no-warnings -e "new (require('node:sqlite').DatabaseSync)(process.argv[1]).exec(\"VACUUM INTO '\" + process.argv[2] + \"'\")" "$S/shop.db" "$F" \
+  || logger -t mebel-segment "резервная копия базы не создана"
+[ -d "$S/uploads" ] && tar -czf "$D/photos-$(date +%F).tar.gz" -C "$S" uploads
+find "$D" \( -name 'shop-*.db' -o -name 'photos-*.tar.gz' \) -mtime +30 -delete
 BK
 chmod +x /etc/cron.daily/mebel-segment-backup
 
