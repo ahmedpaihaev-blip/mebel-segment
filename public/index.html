@@ -971,10 +971,10 @@ function mailBox(edit){
 function tgBox(){
   const t=A.tg;
   if(t&&t.linked)return`<div class="formbox"><h3>Уведомления в Telegram <span class="pill p-ok">Работают</span></h3>
-   <p style="margin:0">Бот <b>@${esc(t.bot)}</b> присылает новые заказы и регистрации клиентов в чат «${esc(t.chat)}».</p>
+   <p style="margin:0">Бот <b>@${esc(t.bot)}</b> присылает новые заказы, оплаты и регистрации в чат «${esc(t.chat)}» — без имён и контактов покупателей (они в кабинете и на почте).</p>
    <div class="acts"><button class="btn" data-act="tgTest">Отправить проверку</button><button class="btn danger" data-act="tgOff">Отключить</button></div></div>`;
   return`<form class="formbox" id="tgForm"><h3>Уведомления в Telegram</h3>
-   <p class="hint" style="margin:0">Новые заказы и регистрации будут сразу приходить вам в Telegram.</p>
+   <p class="hint" style="margin:0">Новые заказы и оплаты будут сразу приходить вам в Telegram: номер, сумма и состав заказа. Имя, телефон и почта покупателя в Telegram не отправляются — Telegram зарубежный сервис, а по 152-ФЗ передача данных за рубеж требует отдельного уведомления Роскомнадзора. Контакты — в кабинете и в письме на почту.</p>
    <ol class="steps-list">
     <li>В Telegram откройте <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a>, отправьте <span class="mono">/newbot</span>.</li>
     <li>Придумайте имя (например, <i>Mebel Segment заказы</i>) и адрес, который заканчивается на <span class="mono">bot</span>.</li>

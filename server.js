@@ -312,9 +312,11 @@ async function tgSend(text, link) {
     reply_markup: link ? { inline_keyboard: [[{ text: link.text, url: link.url }]] } : undefined });
   return true;
 }
-// уведомление владельцу: в Telegram (если подключён) и на почту (если подключена)
-function notify(text, link, subject) {
-  tgSend(text, link).catch(e => console.error('Telegram:', e.message));
+// уведомление владельцу: в Telegram (если подключён) и на почту (если подключена).
+// Telegram — зарубежный сервис, поэтому туда уходит отдельный текст без персональных данных покупателя
+// (без имени, телефона, почты, ИНН, адреса): номер, сумма, состав. Подробности — на почте и в кабинете.
+function notify(text, link, subject, tgText) {
+  tgSend(tgText || text, link).catch(e => console.error('Telegram:', e.message));
   const m = mailCfg();
   if (m && m.to) {
     const [first, ...rest] = text.split('\n');
@@ -329,7 +331,9 @@ function notifyOrder(orderId) {
   const lines = (inv ? inv.items : []).map(x => `• ${h(x.name)} — ${x.qty} ${h(x.unit)} × ${rubs(x.price)}`);
   const head = [`🛒 <b>Новый заказ №${o.id}</b> — <b>${rubs(inv ? inv.sum : 0)}</b>`, `👤 ${h(o.client)}${c ? ` (кабинет: ${h(c.email)})` : ''}`,
     `📞 ${h(o.phone)}`, o.inn ? `🏢 ИНН ${h(o.inn)}` : '', o.comment ? `💬 ${h(o.comment)}` : ''].filter(Boolean);
-  notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Новый заказ №${o.id} на ${rubs(inv ? inv.sum : 0)} — ${o.client}`);
+  const tg = [`🛒 <b>Новый заказ №${o.id}</b> — <b>${rubs(inv ? inv.sum : 0)}</b>`, h((o.comment || '').split('. ')[0]), lines.join('\n'),
+    'Контакты покупателя — в кабинете и на почте.'].filter(Boolean).join('\n\n');
+  notify([head.join('\n'), lines.join('\n'), inv ? `Счёт №${inv.id} выставлен автоматически.` : ''].filter(Boolean).join('\n\n'), { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Новый заказ №${o.id} на ${rubs(inv ? inv.sum : 0)} — ${o.client}`, tg);
 }
 
 
@@ -400,7 +404,8 @@ async function syncPayment(id) {
       return { inv, amount };
     });
     if (done) notify(`💳 <b>Оплачен онлайн заказ${done.inv.order_id ? ' №' + done.inv.order_id : ''}</b> — <b>${rubs(done.amount)}</b>\n👤 ${h(done.inv.client)}\nСчёт №${done.inv.id} отмечен оплаченным.`,
-      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачен онлайн: ${rubs(done.amount)} — ${done.inv.client}`);
+      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачен онлайн: ${rubs(done.amount)} — ${done.inv.client}`,
+      `💳 <b>Оплачен онлайн заказ${done.inv.order_id ? ' №' + done.inv.order_id : ''}</b> — <b>${rubs(done.amount)}</b>\nСчёт №${done.inv.id} отмечен оплаченным.`);
   }
   return p.status;
 }
@@ -801,7 +806,8 @@ const routes = {
       .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now(), `${now()} ред. ${PRIVACY_DATE}`).lastInsertRowid);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     linkOrders(c); newSession(res, req, 'customer', id);
-    notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' }, `Новый клиент на сайте: ${c.name}`);
+    notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' }, `Новый клиент на сайте: ${c.name}`,
+      `👋 <b>Новый клиент зарегистрировался на сайте</b>\nДанные — в кабинете, раздел «Клиенты».`);
     return { ok: true };
   },
   'POST /api/account/login': (b, req, res) => {
@@ -1031,7 +1037,8 @@ const routes = {
     if (!m) throw new UserError('Выберите файл выписки.');
     const res = importStatement(Buffer.from(m[1], 'base64'), b.bank);
     if (res.paid.length) notify(`🏦 <b>Оплачено по выписке ${h(res.bank)}</b>\n` + res.paid.map(p => `Счёт №${p.id} — ${h(p.client)} — ${rubs(p.sum)}`).join('\n'),
-      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачено по выписке: ${res.paid.length} счёт(а)`);
+      { text: 'Открыть в кабинете', url: SITE_URL + '/admin' }, `Оплачено по выписке: ${res.paid.length} счёт(а)`,
+      `🏦 <b>Оплачено по выписке ${h(res.bank)}</b>\n` + res.paid.map(p => `Счёт №${p.id} — ${rubs(p.sum)}`).join('\n'));
     return res;
   },
   'POST /api/admin/txns': (b) => tx(() => {
