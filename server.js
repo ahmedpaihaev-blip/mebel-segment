@@ -40,8 +40,11 @@ CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, kind TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS resets (token TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, exp INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
   status TEXT NOT NULL, created TEXT NOT NULL, url TEXT);
+CREATE TABLE IF NOT EXISTS refunds (id TEXT PRIMARY KEY, invoice_id INTEGER NOT NULL, payment_id TEXT, amount REAL NOT NULL, status TEXT NOT NULL,
+  created TEXT NOT NULL, reason TEXT, bank_id INTEGER);
 `);
-for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER'], ['invoices', 'email', 'TEXT'], ['invoices', 'shipped_at', 'TEXT'], ['txns', 'ext_id', 'TEXT']]) {
+for (const [table, col, type] of [['products', 'photo', 'TEXT'], ['products', 'box', 'INTEGER'], ['products', 'descr', 'TEXT'], ['orders', 'customer_id', 'INTEGER'], ['invoices', 'email', 'TEXT'], ['invoices', 'shipped_at', 'TEXT'], ['txns', 'ext_id', 'TEXT'],
+  ['orders', 'consent', 'TEXT'], ['customers', 'consent', 'TEXT']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
 }
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS txns_ext ON txns (bank_id, ext_id) WHERE ext_id IS NOT NULL');
@@ -176,21 +179,22 @@ function adminState() {
   const recItems = db.prepare('SELECT ri.*, p.sku, p.name FROM receipt_items ri JOIN products p ON p.id = ri.product_id WHERE receipt_id = ?');
   return {
     owner: getOwner(),
-    yk: (y => y ? { shop_id: y.shop_id, test: !!y.test, bank: y.bank, receipt: !!y.receipt } : null)(ykCfg()),
+    yk: (y => y ? { shop_id: y.shop_id, test: !!y.test, bank: y.bank, receipt: !!y.receipt, tax: y.tax || 0, vat: y.vat || 1 } : null)(ykCfg()),
     mail: (m => m ? { host: m.host, port: m.port, user: m.user, to: m.to || '', ok: !!m.pass } : null)(getSetting('mail')),
     tg: (t => t ? { bot: t.bot || '', linked: !!t.chat_id, chat: t.chat_name || '' } : null)(getSetting('tg')),
     cats: CATS,
     products: db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all(),
     banks: db.prepare('SELECT * FROM banks ORDER BY id').all(),
     txns: db.prepare('SELECT * FROM txns ORDER BY id DESC LIMIT 300').all(),
-    invoices: invoiceRows().map(i => ({ ...i, links: docLinks(i) })),
-    docs: docsCfg(),
+    invoices: (paidOnline => invoiceRows().map(i => ({ ...i, links: docLinks(i), online: paidOnline.has(i.id) })))(
+      new Set(db.prepare("SELECT invoice_id FROM payments WHERE status = 'succeeded'").all().map(r => r.invoice_id))),
+    docs: docsCfg(), seo: seoCfg(),
     backup: { ...backupCfg(), last: getSetting('backup_last') },
     orders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 300').all(),
     customers: db.prepare(`SELECT c.id, c.email, c.name, c.phone, c.company, c.inn, c.created,
         (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status != 'cancelled') AS orders,
         (SELECT COALESCE(SUM(ii.qty * ii.price), 0) FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id JOIN orders o ON o.id = i.order_id
-          WHERE o.customer_id = c.id AND i.status != 'cancelled') AS total,
+          WHERE o.customer_id = c.id AND i.status NOT IN ('cancelled', 'refunded')) AS total,
         (SELECT COALESCE(SUM(ii.qty * ii.price), 0) FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id JOIN orders o ON o.id = i.order_id
           WHERE o.customer_id = c.id AND i.status = 'paid') AS paid
       FROM customers c ORDER BY total DESC, c.id DESC`).all(),
@@ -272,6 +276,21 @@ const SITE_URL = process.env.SITE_URL || 'https://mebel-segment.ru';
 const getSetting = k => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(k); return r ? JSON.parse(r.value) : null; };
 const setSetting = (k, v) => db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, JSON.stringify(v));
 const h = v => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const hq = v => h(v).replace(/"/g, '&quot;');
+// Яндекс Метрика и Вебмастер: номер счётчика и код подтверждения задаются в кабинете («Настройки» → «Сайт в Яндексе»)
+const seoCfg = () => ({ metrika: '', ywm: '', ...(getSetting('seo') || {}) });
+const seoHead = () => { const c = seoCfg(); return c.ywm ? `<meta name="yandex-verification" content="${hq(c.ywm)}">` : ''; };
+function metrikaTag() {
+  const id = seoCfg().metrika; if (!/^\d{5,12}$/.test(id)) return '';
+  return `<script>(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();
+for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r)return}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
+(window,document,"script","https://mc.yandex.ru/metrika/tag.js","ym");ym(${id},"init",{clickmap:true,trackLinks:true,accurateTrackBounce:true,ecommerce:"dataLayer"});window.MS_METRIKA=${id};</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/${id}" style="position:absolute;left:-9999px" alt=""></div></noscript>
+<script>(function(){try{if(localStorage.getItem('cookieOk'))return}catch(e){}var d=document.createElement('div');
+d.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:40;max-width:560px;margin:0 auto;background:#151515;color:#EDECE8;border-radius:16px;padding:14px 16px;font:13px/1.45 Arial,sans-serif;display:flex;gap:12px;align-items:center';
+d.innerHTML='<span style="flex:1">Мы используем cookie и Яндекс Метрику, чтобы сайт работал и становился удобнее. Подробнее — в <a href="/privacy" style="color:#EDECE8">политике конфиденциальности</a>.</span><button style="border:0;background:#EDECE8;color:#151515;font-weight:bold;border-radius:999px;padding:9px 16px;cursor:pointer">Хорошо</button>';
+d.querySelector('button').onclick=function(){try{localStorage.setItem('cookieOk','1')}catch(e){}d.remove()};addEventListener('load',function(){document.body.appendChild(d)})})()</script>`;
+}
 const rubs = n => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
 async function tgCall(token, method, body) {
   let r;
@@ -328,11 +347,23 @@ async function ykApi(cfg, method, pth, body) {
   if (!r.ok) throw new Error(r.status === 401 ? 'ЮKassa не приняла shopId или секретный ключ' : (j.description || `ЮKassa ответила ${r.status}`));
   return j;
 }
+// телефон для чека: 11 цифр, начиная с 7 (9001234567 → 79001234567)
+const phone11 = v => { const d = digits(v); return d.length === 10 ? '7' + d : d.length === 11 && d[0] === '7' ? d : ''; };
+// данные для чека по 54-ФЗ («Чеки от ЮKassa» или подключённая касса). Тот же состав — для чека возврата.
+function receiptFor(cfg, inv, o, c) {
+  const email = (c && c.email) || inv.email || '', ph = phone11(o && o.phone);
+  const customer = validEmail(email) ? { email } : ph ? { phone: ph } : null;
+  if (!customer) throw new UserError('Для кассового чека нужна почта или телефон покупателя.');
+  const r = { customer, items: inv.items.map(x => ({ description: x.name.slice(0, 128), quantity: String(x.qty), amount: { value: x.price.toFixed(2), currency: 'RUB' },
+    vat_code: Number(cfg.vat) || 1, payment_mode: 'full_payment', payment_subject: 'commodity' })) };
+  if (Number(cfg.tax)) r.tax_system_code = Number(cfg.tax);
+  return r;
+}
 async function startPayment(invoiceId) {
   const cfg = ykCfg(); if (!cfg) throw new UserError('Онлайн-оплата пока не подключена. Оплатите по счёту.');
   const [inv] = invoiceRows('WHERE id = ?', invoiceId);
   if (!inv) throw new UserError('Счёт не найден.', 404);
-  if (inv.status !== 'issued') throw new UserError(inv.status === 'paid' ? 'Этот заказ уже оплачен.' : 'Этот счёт отменён.');
+  if (inv.status !== 'issued') throw new UserError(inv.status === 'paid' ? 'Этот заказ уже оплачен.' : inv.status === 'refunded' ? 'По этому заказу деньги возвращены.' : 'Этот счёт отменён.');
   const o = inv.order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(inv.order_id) : null;
   const c = o && o.customer_id ? db.prepare('SELECT email FROM customers WHERE id = ?').get(o.customer_id) : null;
   const token = crypto.randomBytes(16).toString('hex');
@@ -342,12 +373,7 @@ async function startPayment(invoiceId) {
     description: `Заказ №${o ? o.id : inv.id} на mebel-segment.ru`.slice(0, 128),
     metadata: { invoice_id: String(inv.id), order_id: String(o ? o.id : '') },
   };
-  if (cfg.receipt) { // данные для чека по 54-ФЗ («Чеки от ЮKassa» или подключённая касса)
-    const ph = digits(o && o.phone);
-    body.receipt = { customer: c ? { email: c.email } : ph.length === 11 ? { phone: ph } : {},
-      items: inv.items.map(x => ({ description: x.name.slice(0, 128), quantity: String(x.qty), amount: { value: x.price.toFixed(2), currency: 'RUB' },
-        vat_code: 1, payment_mode: 'full_payment', payment_subject: 'commodity' })) };
-  }
+  if (cfg.receipt) body.receipt = receiptFor(cfg, inv, o, c);
   const p = await ykApi(cfg, 'POST', '/payments', body);
   const url = p.confirmation && p.confirmation.confirmation_url;
   if (!url) throw new Error('ЮKassa не вернула ссылку на оплату');
@@ -380,25 +406,32 @@ async function syncPayment(id) {
 }
 
 
-/* ---------- страница «Реквизиты и условия» (требуется ЮKassa и банками) ---------- */
-function renderInfo() {
-  const o = getOwner(), e = v => h(v || '');
-  const fio = (o.name || '').replace(/^ИП\s*/i, '');
-  const req = [['Продавец', o.name || 'Индивидуальный предприниматель'], ['ИНН', o.inn], ['ОГРНИП', o.ogrnip], ['Адрес', o.addr],
-    ['Телефон', o.phone], ['Почта', o.email], ['Расчётный счёт', o.acc], ['Банк', o.bank], ['БИК', o.bik], ['Корр. счёт', o.ks]].filter(([, v]) => v);
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Реквизиты и условия — Mebel Segment</title><meta name="description" content="Реквизиты продавца, условия оплаты, доставки и возврата, публичная оферта Mebel Segment.">
-<link rel="icon" href="/favicon.png"><style>
-*{box-sizing:border-box}body{margin:0;background:#E8E7E3;color:#151515;font:15px/1.6 Arial,Helvetica,sans-serif}
+/* ---------- общие страницы сайта (реквизиты, политика, товары) ---------- */
+const PRIVACY_DATE = '18.11.2026';
+const INFO_CSS = `*{box-sizing:border-box}body{margin:0;background:#E8E7E3;color:#151515;font:15px/1.6 Arial,Helvetica,sans-serif}
 .wrap{max-width:860px;margin:0 auto;padding:16px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0 20px}
 header img{height:34px}header a{color:#151515;font-weight:bold;text-decoration:none;font-size:14px}
 .card{background:#fff;border-radius:18px;padding:24px 28px;margin-bottom:14px}h1{font-size:28px;margin:0 0 6px}h2{font-size:19px;margin:0 0 10px}
 table{border-collapse:collapse;width:100%}td{padding:7px 0;border-bottom:1px solid #eee;vertical-align:top}td:first-child{color:#666;width:200px;padding-right:12px}
 nav{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0}nav a{border:1.5px solid #151515;border-radius:999px;padding:5px 14px;color:#151515;text-decoration:none;font-size:13px;font-weight:bold}
 ol,ul{padding-left:20px}li{margin:4px 0}.muted{color:#666;font-size:13px}@media(max-width:600px){td:first-child{width:120px}.card{padding:18px}}
-</style></head><body><div class="wrap">
+a{color:#151515}`;
+function pageShell(title, desc, canon, extraHead = '') {
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${h(title)} — Mebel Segment</title><meta name="description" content="${hq(desc)}"><link rel="canonical" href="${SITE_URL}${canon}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Mebel Segment"><meta property="og:title" content="${hq(title)}"><meta property="og:description" content="${hq(desc)}">
+<link rel="icon" href="/favicon.png">${seoHead()}${extraHead}<style>${INFO_CSS}</style></head><body><div class="wrap">
 <header><a href="/"><img src="/logo.png" alt="Mebel Segment"></a><a href="/#catalog">← В каталог</a></header>
-<div class="card"><h1>Реквизиты и условия</h1><p class="muted">Интернет-магазин мебельной фурнитуры mebel-segment.ru</p>
+`;
+}
+const pageEnd = () => `<p class="muted" style="text-align:center"><a href="/rekvizity">Реквизиты и оферта</a> · <a href="/privacy">Политика конфиденциальности</a> · <a href="/soglasie">Согласие на обработку данных</a></p>
+</div>${metrikaTag()}</body></html>`;
+/* ---------- страница «Реквизиты и условия» (требуется ЮKassa и банками) ---------- */
+function renderInfo() {
+  const o = getOwner(), e = v => h(v || '');
+  const req = [['Продавец', o.name || 'Индивидуальный предприниматель'], ['ИНН', o.inn], ['ОГРНИП', o.ogrnip], ['Адрес', o.addr],
+    ['Телефон', o.phone], ['Почта', o.email], ['Расчётный счёт', o.acc], ['Банк', o.bank], ['БИК', o.bik], ['Корр. счёт', o.ks]].filter(([, v]) => v);
+  return pageShell('Реквизиты и условия', 'Реквизиты продавца, условия оплаты, доставки и возврата, публичная оферта Mebel Segment.', '/rekvizity') + `<div class="card"><h1>Реквизиты и условия</h1><p class="muted">Интернет-магазин мебельной фурнитуры mebel-segment.ru</p>
 <nav><a href="#rekvizity">Реквизиты</a><a href="#oplata">Оплата</a><a href="#dostavka">Доставка</a><a href="#vozvrat">Возврат</a><a href="#oferta">Оферта</a><a href="#dannye">Персональные данные</a></nav></div>
 <div class="card" id="rekvizity"><h2>Реквизиты продавца</h2><table>${req.map(([k, v]) => `<tr><td>${k}</td><td>${e(v)}</td></tr>`).join('')}</table></div>
 <div class="card" id="oplata"><h2>Оплата</h2><ul>
@@ -423,10 +456,62 @@ ol,ul{padding-left:20px}li{margin:4px 0}.muted{color:#666;font-size:13px}@media(
 <li>Право собственности и риск случайной гибели переходят к Покупателю в момент передачи товара Покупателю или перевозчику.</li>
 <li>Обмен и возврат — в соответствии с разделом «Обмен и возврат» и законодательством РФ.</li>
 <li>Споры разрешаются путём переговоров, при недостижении согласия — в порядке, установленном законодательством РФ.</li></ol></div>
-<div class="card" id="dannye"><h2>Обработка персональных данных</h2>
-<p>Оформляя заказ или регистрируясь на сайте, покупатель соглашается на обработку Продавцом своих персональных данных (имя, телефон, почта, адрес доставки, ИНН) в целях исполнения заказа, связи с покупателем и выставления документов, в соответствии с Федеральным законом № 152-ФЗ «О персональных данных». Данные не передаются третьим лицам, кроме случаев, необходимых для доставки и оплаты заказа. Покупатель может отозвать согласие, написав Продавцу${o.email ? ' на ' + e(o.email) : ''}.</p></div>
-<p class="muted" style="text-align:center">© ${new Date().getFullYear()} ${e(o.name || 'Mebel Segment')}${fio ? '' : ''} · mebel-segment.ru</p>
-</div></body></html>`;
+<div class="card" id="dannye"><h2>Персональные данные</h2>
+<p>Как мы обрабатываем и защищаем данные покупателей — в <a href="/privacy">Политике обработки персональных данных</a>. Текст согласия, которое покупатель даёт при заказе или регистрации, — на странице <a href="/soglasie">«Согласие на обработку персональных данных»</a>.</p></div>
+<p class="muted" style="text-align:center">© ${new Date().getFullYear()} ${e(o.name || 'Mebel Segment')} · mebel-segment.ru</p>
+` + pageEnd();
+}
+function operatorLine(o) {
+  return [o.name || 'Индивидуальный предприниматель', o.inn && 'ИНН ' + o.inn, o.ogrnip && 'ОГРНИП ' + o.ogrnip, o.addr && 'адрес: ' + o.addr].filter(Boolean).map(h).join(', ');
+}
+function renderPrivacy() {
+  const o = getOwner(), mail = o.email ? `<a href="mailto:${hq(o.email)}">${h(o.email)}</a>` : 'по телефону ' + h(o.phone || '');
+  return pageShell('Политика обработки персональных данных', 'Как Mebel Segment обрабатывает и защищает персональные данные покупателей сайта mebel-segment.ru.', '/privacy') + `
+<div class="card"><h1>Политика обработки персональных данных</h1><p class="muted">Редакция от ${PRIVACY_DATE}. Сайт mebel-segment.ru</p></div>
+<div class="card"><h2>1. Кто обрабатывает данные</h2><p>Оператор персональных данных — ${operatorLine(o)} (далее — Оператор). Связаться с Оператором по вопросам персональных данных: ${mail}${o.phone && o.email ? ', тел. ' + h(o.phone) : ''}.</p>
+<p>Политика составлена в соответствии с Федеральным законом от 27.07.2006 № 152-ФЗ «О персональных данных» и действует в отношении всех данных, которые Оператор получает от посетителей сайта.</p></div>
+<div class="card"><h2>2. Какие данные мы обрабатываем и зачем</h2><table>
+<tr><td>Оформление и исполнение заказа, выставление счёта и документов, связь по заказу</td><td>имя или наименование организации, телефон, адрес электронной почты, ИНН (для организаций и ИП), адрес доставки, состав заказа и комментарий</td></tr>
+<tr><td>Личный кабинет покупателя</td><td>почта, имя, телефон, организация, ИНН, пароль (хранится только в виде необратимого хеша), история заказов</td></tr>
+<tr><td>Онлайн-оплата и кассовый чек</td><td>почта или телефон для чека, сумма и состав заказа. Данные банковской карты вводятся на странице платёжного сервиса и Оператору не передаются</td></tr>
+<tr><td>Безопасность сайта</td><td>IP-адрес, технические данные запросов (журналы сервера), файлы cookie сеанса входа</td></tr>
+${seoCfg().metrika ? '<tr><td>Статистика посещаемости и улучшение сайта</td><td>сведения о посещениях, собираемые сервисом Яндекс Метрика: обезличенный идентификатор, IP-адрес, сведения о браузере и устройстве, просмотренные страницы</td></tr>' : ''}
+</table><p>Оператор не обрабатывает специальные категории и биометрические персональные данные.</p></div>
+<div class="card"><h2>3. Основания обработки</h2><ul><li>согласие покупателя на обработку персональных данных — <a href="/soglasie">текст согласия</a>;</li>
+<li>заключение и исполнение договора купли-продажи, стороной которого является покупатель (<a href="/rekvizity#oferta">публичная оферта</a>);</li>
+<li>исполнение обязанностей Оператора по налоговому и бухгалтерскому учёту и законодательству о применении контрольно-кассовой техники.</li></ul></div>
+<div class="card"><h2>4. Что мы делаем с данными</h2><p>Сбор, запись, систематизация, накопление, хранение, уточнение, использование, передача (предоставление) в случаях из раздела 5, обезличивание, блокирование, удаление и уничтожение — с использованием средств автоматизации и без них.</p>
+<p>Запись и хранение персональных данных граждан РФ ведутся в базах данных, находящихся на территории Российской Федерации.</p></div>
+<div class="card"><h2>5. Кому передаются данные</h2><ul>
+<li>платёжному сервису ЮKassa (ООО НКО «ЮМани») — для приёма онлайн-оплаты и формирования кассового чека;</li>
+<li>службам доставки и перевозчикам — имя, телефон и адрес, если выбрана доставка;</li>
+<li>почтовому сервису, через который отправляются письма со счётом, накладной и восстановлением пароля;</li>
+${seoCfg().metrika ? '<li>ООО «Яндекс» — сведения о посещениях через сервис Яндекс Метрика;</li>' : ''}
+<li>государственным органам — в случаях, прямо предусмотренных законом.</li></ul>
+<p>Оператор не продаёт персональные данные и не передаёт их для рекламы третьих лиц.</p></div>
+<div class="card"><h2>6. Сроки хранения</h2><p>Данные хранятся до достижения целей обработки или до отзыва согласия. Сведения в счетах, накладных и кассовых документах хранятся в течение сроков, установленных законодательством о бухгалтерском и налоговом учёте (как правило, 5 лет). По истечении сроков данные удаляются или обезличиваются.</p></div>
+<div class="card"><h2>7. Как мы защищаем данные</h2><ul><li>соединение с сайтом защищено шифрованием (HTTPS);</li><li>пароли покупателей хранятся только в виде криптографического хеша;</li>
+<li>доступ к данным заказов есть только у Оператора, вход в кабинет защищён паролем и ограничением числа попыток;</li><li>ссылки на счета и накладные содержат секретный ключ и не подбираются перебором;</li><li>регулярно создаются резервные копии.</li></ul></div>
+<div class="card"><h2>8. Ваши права</h2><p>Вы вправе получить сведения об обработке своих данных, потребовать их уточнения, блокирования или удаления, отозвать согласие, а также обжаловать действия Оператора в Роскомнадзоре или в суде. Направьте запрос ${mail}. Оператор ответит в течение 10 рабочих дней.</p>
+<p>Отзыв согласия не влияет на законность обработки до отзыва. После отзыва Оператор вправе продолжить обработку, если это необходимо для исполнения уже заключённого договора или требований закона.</p></div>
+<div class="card"><h2>9. Cookie</h2><p>Сайт использует cookie, необходимые для работы корзины и входа в личный кабинет${seoCfg().metrika ? ', а также cookie сервиса Яндекс Метрика для статистики посещений. Отключить cookie можно в настройках браузера; без них корзина и вход могут работать некорректно' : ''}.</p></div>
+` + pageEnd();
+}
+function renderConsent() {
+  const o = getOwner();
+  return pageShell('Согласие на обработку персональных данных', 'Текст согласия покупателя на обработку персональных данных при оформлении заказа и регистрации на mebel-segment.ru.', '/soglasie') + `
+<div class="card"><h1>Согласие на обработку персональных данных</h1><p class="muted">Редакция от ${PRIVACY_DATE}</p>
+<p>Отмечая на сайте mebel-segment.ru поле «Я даю согласие на обработку персональных данных» при оформлении заказа или регистрации, я свободно, своей волей и в своём интересе даю согласие ${operatorLine(o)} (далее — Оператор) на обработку моих персональных данных на следующих условиях.</p>
+<ol>
+<li><b>Данные:</b> фамилия, имя, отчество или наименование организации; номер телефона; адрес электронной почты; ИНН; адрес доставки; сведения о заказах${seoCfg().metrika ? '; сведения о посещении сайта, собираемые Яндекс Метрикой (cookie, IP-адрес, данные браузера и устройства)' : ''}.</li>
+<li><b>Цели:</b> оформление, подтверждение и исполнение заказа; выставление счетов, накладных и кассовых чеков; связь со мной по заказу; работа личного кабинета и восстановление доступа к нему${seoCfg().metrika ? '; анализ посещаемости и улучшение сайта' : ''}.</li>
+<li><b>Действия:</b> сбор, запись, систематизация, накопление, хранение, уточнение, использование, передача (предоставление) лицам, указанным в пункте 4, блокирование, удаление, уничтожение — с использованием средств автоматизации и без них.</li>
+<li><b>Передача:</b> платёжному сервису ЮKassa (ООО НКО «ЮМани») для оплаты и кассового чека; службам доставки — если выбрана доставка; почтовому сервису для отправки писем${seoCfg().metrika ? '; ООО «Яндекс» (Яндекс Метрика)' : ''}.</li>
+<li><b>Срок:</b> согласие действует до достижения целей обработки или до его отзыва.</li>
+<li><b>Отзыв:</b> согласие можно отозвать, направив Оператору заявление ${o.email ? 'на почту ' + h(o.email) : 'любым доступным способом'}${o.phone ? ' (тел. ' + h(o.phone) + ')' : ''}. Оператор прекратит обработку в срок до 10 рабочих дней, кроме случаев, когда обработка необходима для исполнения договора или требований закона.</li>
+</ol>
+<p>Порядок обработки и защиты данных описан в <a href="/privacy">Политике обработки персональных данных</a>.</p></div>
+` + pageEnd();
 }
 /* ---------- документы: счёт и товарная накладная ---------- */
 // ссылки на документы подписаны секретом сервера — их нельзя подобрать перебором номеров
@@ -518,6 +603,23 @@ function autoDoc(kind, invId) {
 /* ---------- ежедневная копия базы на почту владельцу ---------- */
 const zlib = require('node:zlib');
 const backupCfg = () => ({ daily: true, ...(getSetting('backup') || {}) });
+// архив tar.gz папки uploads (формат ustar, без внешних программ); null — если фото нет
+function photosTarGz() {
+  const names = fs.readdirSync(UPLOADS).filter(n => /^[0-9]+-[0-9a-f]{12}\.(jpg|png|webp)$/.test(n));
+  if (!names.length) return null;
+  const parts = [];
+  for (const n of names) {
+    const data = fs.readFileSync(path.join(UPLOADS, n)), hd = Buffer.alloc(512);
+    const put = (v, off, len) => hd.write(v, off, len, 'ascii');
+    put('uploads/' + n, 0, 100); put('0000644\0', 100, 8); put('0000000\0', 108, 8); put('0000000\0', 116, 8);
+    put(data.length.toString(8).padStart(11, '0') + '\0', 124, 12); put(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136, 12);
+    put('        ', 148, 8); put('0', 156, 1); put('ustar\0', 257, 6); put('00', 263, 2);
+    put(hd.reduce((s, x) => s + x, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
+    parts.push(hd, data, Buffer.alloc((512 - data.length % 512) % 512));
+  }
+  parts.push(Buffer.alloc(1024));
+  return zlib.gzipSync(Buffer.concat(parts));
+}
 async function sendBackup() {
   const m = mailCfg(); if (!m || !m.to) throw new UserError('Сначала подключите почту: «Настройки» → «Почта».');
   const tmp = path.join(DATA_DIR, `backup-${process.pid}-${Date.now()}.db`);
@@ -526,11 +628,16 @@ async function sendBackup() {
     const gz = zlib.gzipSync(fs.readFileSync(tmp), { level: 9 });
     const day = new Date().toLocaleDateString('ru-RU'), stamp = new Date().toISOString().slice(0, 10);
     const cnt = t => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
+    const files = [{ name: `mebel-segment-${stamp}.db.gz`, type: 'application/gzip', content: gz }];
+    // фото товаров — отдельным архивом, если письмо не выходит слишком большим (у почтовых сервисов лимит ~25 МБ)
+    const photos = photosTarGz();
+    const withPhotos = photos && gz.length + photos.length < 18 * 1024 * 1024;
+    if (withPhotos) files.push({ name: `mebel-segment-photos-${stamp}.tar.gz`, type: 'application/gzip', content: photos });
     await smtpSend(m, m.to, `Копия базы Mebel Segment за ${day}`, mailWrap(`Копия базы за ${day}`,
-      `<p>Во вложении — полная копия данных сайта: товары, остатки, заказы, счета, клиенты, банки и настройки.</p>
+      `<p>Во вложении — полная копия данных сайта: товары, остатки, заказы, счета, клиенты, банки и настройки${withPhotos ? ', а также фотографии товаров' : ''}.</p>
        <p style="color:#555">Сейчас в базе: товаров ${db.prepare('SELECT COUNT(*) c FROM products WHERE active = 1').get().c}, заказов ${cnt('orders')}, счетов ${cnt('invoices')}, клиентов ${cnt('customers')}.</p>
-       <p style="color:#8a8984;font-size:13px">Храните эти письма — из любого из них можно восстановить сайт. Фотографии товаров в копию не входят. В файле есть личные данные клиентов: не пересылайте его посторонним.</p>`),
-      [{ name: `mebel-segment-${stamp}.db.gz`, type: 'application/gzip', content: gz }]);
+       <p style="color:#8a8984;font-size:13px">Храните эти письма — из любого из них можно восстановить сайт.${photos && !withPhotos ? ' Фото товаров слишком много для письма — они хранятся в копиях на сервере.' : ''} В файле есть личные данные клиентов: не пересылайте его посторонним.</p>`),
+      files);
     setSetting('backup_last', { at: now(), size: gz.length });
     return { size: gz.length };
   } finally { fs.rm(tmp, () => {}); }
@@ -632,13 +739,14 @@ const routes = {
     const me = customerOf(req);
     const client = str(b.name, 120), phone = str(b.phone, 40), inn = str(b.inn, 12).replace(/\D/g, '');
     if (!client || phone.replace(/\D/g, '').length < 10) throw new UserError('Укажите имя и телефон из 10–11 цифр.');
+    if (b.consent !== true) throw new UserError('Отметьте согласие на обработку персональных данных — без него мы не можем принять заказ.');
     const tags = [b.kind === 'company' ? 'Организация / ИП' : 'Частное лицо', b.delivery === 'delivery' ? 'Доставка' : 'Самовывоз'];
     const comment = [tags.join(' · '), str(b.comment, 500)].filter(Boolean).join('. ');
     // товар без остатка можно заказать «под заказ»: владелец подтвердит срок, списание — только при отгрузке
     const email = normEmail(b.email) || (me ? me.email : '');
     if (email && !validEmail(email)) throw new UserError('Проверьте адрес почты.');
     const items = readItems(b.items, false);
-    const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id) VALUES (?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null);
+    const o = db.prepare('INSERT INTO orders (date, client, phone, inn, comment, customer_id, consent) VALUES (?, ?, ?, ?, ?, ?, ?)').run(now(), client, phone, inn || null, comment || null, me ? me.id : null, `${now()} ред. ${PRIVACY_DATE}`);
     const invId = createInvoice({ client, inn, items, orderId: Number(o.lastInsertRowid) });
     if (email) db.prepare('UPDATE invoices SET email = ? WHERE id = ?').run(email, invId);
     return { order: Number(o.lastInsertRowid), invoice: invId, sum: r2(items.reduce((s, x) => s + x.qty * x.p.price, 0)) };
@@ -687,9 +795,10 @@ const routes = {
     if (pw.length < 8 || pw.length > 200) throw new UserError('Пароль — не меньше 8 символов.');
     if (!name) throw new UserError('Укажите имя или название компании.');
     if (digits(phone).length < 10) throw new UserError('Укажите телефон из 10–11 цифр.');
+    if (b.consent !== true) throw new UserError('Отметьте согласие на обработку персональных данных.');
     if (db.prepare('SELECT 1 FROM customers WHERE email = ?').get(email)) throw new UserError('Эта почта уже зарегистрирована. Войдите или попросите сбросить пароль.', 409);
-    const id = Number(db.prepare('INSERT INTO customers (email, pass, name, phone, company, inn, created) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now()).lastInsertRowid);
+    const id = Number(db.prepare('INSERT INTO customers (email, pass, name, phone, company, inn, created, consent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(email, hashPass(pw), name, phone, str(b.company, 160), str(b.inn, 12).replace(/\D/g, ''), now(), `${now()} ред. ${PRIVACY_DATE}`).lastInsertRowid);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     linkOrders(c); newSession(res, req, 'customer', id);
     notify(`👋 <b>Новый клиент на сайте</b>\n${h(c.name)}${c.company ? ' · ' + h(c.company) : ''}\n📞 ${h(c.phone)}\n✉️ ${h(c.email)}`, { text: 'Клиенты в кабинете', url: SITE_URL + '/admin' }, `Новый клиент на сайте: ${c.name}`);
@@ -708,7 +817,7 @@ const routes = {
     const orders = db.prepare('SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC').all(c.id);
     const invs = orders.length ? invoiceRows(`WHERE order_id IN (${orders.map(() => '?').join(',')})`, ...orders.map(o => o.id)) : [];
     const list = orders.map(o => { const i = invs.find(x => x.order_id === o.id); return { ...o, invoice: i ? { ...i, links: docLinks(i) } : null }; });
-    const live = list.filter(o => o.invoice && o.invoice.status !== 'cancelled');
+    const live = list.filter(o => o.invoice && o.invoice.status !== 'cancelled' && o.invoice.status !== 'refunded');
     const year = String(new Date().getFullYear());
     const o = getOwner();
     return {
@@ -781,7 +890,7 @@ const routes = {
   'POST /api/admin/invoices/pay': (b) => tx(() => {
     const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
     if (!inv) throw new UserError('Счёт не найден.', 404);
-    if (inv.status === 'paid') throw new UserError('Счёт уже оплачен.');
+    if (inv.status !== 'issued') throw new UserError(inv.status === 'paid' ? 'Счёт уже оплачен.' : 'Этот счёт отменён или по нему был возврат.');
     const bank = db.prepare('SELECT * FROM banks WHERE id = ?').get(posInt(b.bank));
     if (!bank) throw new UserError('Выберите банк.');
     db.prepare("UPDATE invoices SET status = 'paid', paid_bank = ? WHERE id = ?").run(bank.id, inv.id);
@@ -793,6 +902,7 @@ const routes = {
     const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
     if (!inv) throw new UserError('Счёт не найден.', 404);
     if (inv.shipped) throw new UserError('Счёт уже отгружен.');
+    if (inv.status === 'cancelled' || inv.status === 'refunded') throw new UserError('Отменённый счёт отгрузить нельзя.');
     const getP = db.prepare('SELECT * FROM products WHERE id = ?');
     for (const x of inv.items) { const p = getP.get(x.product_id); if (p.stock < x.qty) throw new UserError(`Не хватает: ${p.name} (на складе ${p.stock}).`); }
     const upd = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
@@ -804,11 +914,49 @@ const routes = {
   'POST /api/admin/invoices/cancel': (b) => tx(() => {
     const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
     if (!inv) throw new UserError('Счёт не найден.', 404);
-    if (inv.status === 'paid' || inv.shipped) throw new UserError('Оплаченный или отгруженный счёт отменить нельзя.');
+    if (inv.status !== 'issued' || inv.shipped) throw new UserError(inv.status === 'paid' ? 'Оплаченный счёт не отменяют — оформите возврат денег.' : 'Этот счёт отменить нельзя.');
     db.prepare("UPDATE invoices SET status = 'cancelled' WHERE id = ?").run(inv.id);
     if (inv.order_id) db.prepare("UPDATE orders SET status = 'cancelled' WHERE id = ?").run(inv.order_id);
     return { ok: true };
   }),
+  // возврат денег: оплаченные онлайн — через ЮKassa (с чеком возврата), оплаченные по счёту — запись о переводе вручную
+  'POST /api/admin/invoices/refund': async (b) => {
+    const [inv] = invoiceRows('WHERE id = ?', posInt(b.id));
+    if (!inv) throw new UserError('Счёт не найден.', 404);
+    if (inv.status !== 'paid') throw new UserError('Вернуть деньги можно только по оплаченному счёту.');
+    const reason = str(b.reason, 200), restock = !!b.restock && !!inv.shipped;
+    const pay = db.prepare("SELECT * FROM payments WHERE invoice_id = ? AND status = 'succeeded' ORDER BY created DESC").get(inv.id);
+    let refundId = 'manual-' + crypto.randomBytes(8).toString('hex'), status = 'succeeded';
+    if (pay) {
+      const cfg = ykCfg(); if (!cfg) throw new UserError('Счёт оплачен онлайн, а ЮKassa отключена. Подключите её снова, чтобы вернуть деньги на карту.');
+      const body = { payment_id: pay.id, amount: { value: r2(pay.amount).toFixed(2), currency: 'RUB' }, description: (reason || `Возврат по счёту №${inv.id}`).slice(0, 250) };
+      if (cfg.receipt) {
+        const o = inv.order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(inv.order_id) : null;
+        const c = o && o.customer_id ? db.prepare('SELECT email FROM customers WHERE id = ?').get(o.customer_id) : null;
+        body.receipt = receiptFor(cfg, inv, o, c);
+      }
+      let r; try { r = await ykApi(cfg, 'POST', '/refunds', body); } catch (e) { throw new UserError('ЮKassa не приняла возврат: ' + e.message + '.'); }
+      if (r.status === 'canceled') throw new UserError('ЮKassa отклонила возврат' + (r.cancellation_details ? ` (${r.cancellation_details.reason})` : '') + '.');
+      refundId = r.id; status = r.status;
+    }
+    const amount = pay ? r2(pay.amount) : inv.sum;
+    tx(() => {
+      const cur = db.prepare('SELECT * FROM invoices WHERE id = ?').get(inv.id);
+      if (cur.status !== 'paid') throw new UserError('По этому счёту возврат уже оформлен.');
+      const bank = db.prepare('SELECT * FROM banks WHERE id = ?').get(cur.paid_bank) || db.prepare('SELECT * FROM banks ORDER BY id LIMIT 1').get();
+      db.prepare('INSERT INTO refunds (id, invoice_id, payment_id, amount, status, created, reason, bank_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(refundId, inv.id, pay ? pay.id : null, amount, status, now(), reason || null, bank ? bank.id : null);
+      db.prepare("UPDATE invoices SET status = 'refunded' WHERE id = ?").run(inv.id);
+      if (inv.order_id) db.prepare("UPDATE orders SET status = 'cancelled' WHERE id = ?").run(inv.order_id);
+      if (bank) {
+        db.prepare('UPDATE banks SET balance = round(balance - ?, 2) WHERE id = ?').run(amount, bank.id);
+        db.prepare('INSERT INTO txns (date, bank_id, text, amount) VALUES (?, ?, ?, ?)').run(now(), bank.id,
+          `Возврат${pay ? ' через ЮKassa' : ''} по счёту №${inv.id}, ${inv.client}${reason ? '. ' + reason : ''}`.slice(0, 300), -amount);
+      }
+      if (restock) { const up = db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?'); for (const x of inv.items) up.run(x.qty, x.product_id); }
+    });
+    return { online: !!pay, status, amount };
+  },
   'POST /api/admin/products': (b) => {
     const sku = str(b.sku, 40), name = str(b.name, 160), cat = CATS.includes(b.cat) ? b.cat : 'Прочее', unit = str(b.unit, 12) || 'шт', price = money(b.price);
     const box = posInt(b.box) || null, descr = str(b.descr, 300) || null;
@@ -939,11 +1087,17 @@ const routes = {
   'POST /api/admin/backup/now': async () => {
     try { return await sendBackup(); } catch (e) { if (e instanceof UserError) throw e; throw new UserError('Не получилось отправить копию: ' + e.message + '.'); }
   },
+  'POST /api/admin/seo': (b) => {
+    const metrika = str(b.metrika, 20).replace(/\D/g, ''), ywm = str(b.ywm, 200).replace(/^.*content=["']?([\w-]+).*$/s, '$1').replace(/[^\w-]/g, '').slice(0, 80);
+    if (metrika && !/^\d{5,12}$/.test(metrika)) throw new UserError('Номер счётчика Метрики — это число из 5–12 цифр.');
+    setSetting('seo', { metrika, ywm }); return { ok: true };
+  },
   'POST /api/admin/docs': (b) => { setSetting('docs', { autoInvoice: !!b.autoInvoice, autoWaybill: !!b.autoWaybill }); return { ok: true }; },
   'POST /api/admin/yookassa': async (b) => {
     const old = getSetting('yk') || {};
     const cfg = { shop_id: str(b.shop_id, 20).replace(/\D/g, ''), secret: str(b.secret, 100).replace(/\s+/g, '') || old.secret || '',
-      bank: posInt(b.bank) || null, receipt: !!b.receipt };
+      bank: posInt(b.bank) || null, receipt: !!b.receipt,
+      tax: [1, 2, 3, 4, 5, 6].includes(Number(b.tax)) ? Number(b.tax) : 0, vat: [1, 2, 7, 8].includes(Number(b.vat)) ? Number(b.vat) : 1 };
     if (!cfg.shop_id) throw new UserError('Укажите shopId — число из настроек магазина в ЮKassa.');
     if (!/^(test|live)_[\w-]{10,}$/.test(cfg.secret)) throw new UserError('Секретный ключ начинается с live_ или test_. Скопируйте его целиком из раздела «Интеграция → Ключи API».');
     let me; try { me = await ykApi(cfg, 'GET', '/me'); } catch (e) { throw new UserError('Не получилось подключить: ' + e.message + '.'); }
@@ -963,7 +1117,7 @@ const routes = {
 
 /* ---------- http ---------- */
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8' };
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
@@ -976,8 +1130,6 @@ function readBody(req, limit = 256 * 1024) {
     req.on('error', reject);
   });
 }
-// По адресу /admin — та же страница, но с настройками приложения «MS Кабинет» прямо в HTML:
-// iPhone читает их при загрузке страницы и не видит подмену скриптом.
 const ADMIN_HEAD = [
   ['<link rel="manifest" href="/manifest.webmanifest">', '<link rel="manifest" href="/manifest-admin.webmanifest">'],
   ['<link rel="apple-touch-icon" href="/apple-touch-icon.png">', '<link rel="apple-touch-icon" href="/admin-apple-touch-icon.png">'],
@@ -986,30 +1138,100 @@ const ADMIN_HEAD = [
   ['<meta name="apple-mobile-web-app-title" content="Mebel Segment">', '<meta name="apple-mobile-web-app-title" content="MS Кабинет">'],
   [/<title>[^<]*<\/title>/, '<title>MS Кабинет</title>'],
 ];
-function serveAdminPage(res) {
+const slug = sku => String(sku).toLowerCase().replace(/[^a-z0-9а-яё-]+/gi, '-');
+const productUrl = p => `/tovar/${encodeURIComponent(slug(p.sku))}`;
+const activeProducts = () => db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY id').all();
+const absPhoto = p => p.photo ? `${SITE_URL}/uploads/${p.photo}` : `${SITE_URL}/hero-hinge.jpg`;
+// каталог прямо в HTML главной страницы — его видят поисковики и пользователи до загрузки скрипта
+function catalogHtml() {
+  const list = activeProducts();
+  return `<div class="wrap seo-cat"><h1 class="caps">Мебельная фурнитура оптом — Mebel Segment, Ставрополь</h1>
+<p class="muted">Загрузка каталога… Если страница не открывается, включите JavaScript или позвоните нам.</p>
+<ul>${list.map(p => `<li><a href="${productUrl(p)}">${h(p.name)}</a> — ${h(p.sku)}, ${rubs(p.price)}${p.box ? `, в коробке ${p.box} ${h(p.unit)}` : ''}</li>`).join('')}</ul></div>`;
+}
+function serveIndex(res, admin) {
   fs.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8', (err, html) => {
     if (err) return send(res, 500, 'Ошибка', 'text/plain; charset=utf-8');
-    for (const [from, to] of ADMIN_HEAD) html = html.replace(from, to);
+    if (admin) {
+      // По адресу /admin — та же страница, но с настройками приложения «MS Кабинет» прямо в HTML:
+      // iPhone читает их при загрузке страницы и не видит подмену скриптом.
+      for (const [from, to] of ADMIN_HEAD) html = html.replace(from, to);
+      html = html.replace('</head>', '<meta name="robots" content="noindex"></head>');
+    } else {
+      const o = getOwner();
+      const org = { '@context': 'https://schema.org', '@type': 'Store', name: 'Mebel Segment', url: SITE_URL, logo: SITE_URL + '/logo.png', image: SITE_URL + '/hero-hinge.jpg',
+        telephone: o.phone || undefined, email: o.email || undefined, address: o.addr ? { '@type': 'PostalAddress', streetAddress: o.addr, addressCountry: 'RU' } : undefined };
+      html = html.replace('</head>', `<link rel="canonical" href="${SITE_URL}/">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Mebel Segment"><meta property="og:title" content="Mebel Segment — мебельная фурнитура оптом">
+<meta property="og:description" content="Петли с доводчиком, 3D-петли, шариковые направляющие и направляющие скрытого монтажа. Опт коробками и розница, Ставрополь.">
+<meta property="og:image" content="${SITE_URL}/hero-hinge.jpg">${seoHead()}
+<script type="application/ld+json">${JSON.stringify(org).replace(/</g, '\\u003c')}</script></head>`)
+        .replace('<main id="app"><div class="wrap empty">Загрузка…</div></main>', `<main id="app">${catalogHtml()}</main>`)
+        .replace('</body>', metrikaTag() + '</body>');
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
     res.end(html);
   });
 }
+function renderProduct(p) {
+  const same = activeProducts().filter(x => x.cat === p.cat && x.id !== p.id).slice(0, 6);
+  const stock = p.stock > 0 ? 'В наличии' : 'Под заказ — срок подтвердит менеджер';
+  const title = `${p.name}, артикул ${p.sku}`;
+  const desc = `${p.name} — ${rubs(p.price)}${p.box ? `, в коробке ${p.box} ${p.unit}` : ''}. ${p.descr || ''} Опт и розница, счёт для юрлиц и ИП. Mebel Segment, Ставрополь.`.replace(/\s+/g, ' ').trim();
+  const ld = { '@context': 'https://schema.org', '@type': 'Product', name: p.name, sku: p.sku, category: p.cat, description: p.descr || p.name, image: absPhoto(p),
+    brand: { '@type': 'Brand', name: 'Mebel Segment' },
+    offers: { '@type': 'Offer', price: p.price.toFixed(2), priceCurrency: 'RUB', url: SITE_URL + productUrl(p), availability: 'https://schema.org/' + (p.stock > 0 ? 'InStock' : 'PreOrder') } };
+  const css = `.prod{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}.prod img{width:100%;border-radius:14px;background:#F2F1ED;aspect-ratio:1;object-fit:cover}
+.price{font-size:30px;font-weight:bold;margin:10px 0}.btn{display:inline-block;border:0;background:#151515;color:#fff;font-weight:bold;padding:13px 22px;border-radius:999px;cursor:pointer;font-size:14px;text-decoration:none;margin:4px 6px 4px 0}
+.btn.out{background:none;color:#151515;border:1.5px solid #151515}.crumbs{font-size:13px;color:#666;margin-bottom:10px}.crumbs a{color:#666}.same{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.same a{display:block;background:#F2F1ED;border-radius:12px;padding:12px;text-decoration:none;font-size:14px}@media(max-width:700px){.prod{grid-template-columns:1fr}}`;
+  return pageShell(title, desc, productUrl(p), `<meta property="og:image" content="${hq(absPhoto(p))}"><script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script><style>${css}</style>`) + `
+<div class="card"><div class="crumbs"><a href="/">Главная</a> › <a href="/#catalog">Каталог</a> › ${h(p.cat)}</div>
+<div class="prod"><div>${p.photo ? `<img src="/uploads/${hq(p.photo)}" alt="${hq(p.name)}">` : `<img src="/hero-hinge.jpg" alt="">`}</div>
+<div><h1>${h(p.name)}</h1><div class="muted">Артикул ${h(p.sku)} · ${h(p.cat)}</div>
+<div class="price">${rubs(p.price)} <span class="muted" style="font-size:15px;font-weight:normal">за ${h(p.unit)}</span></div>
+<p><b>${stock}</b>${p.box ? `<br>В коробке: ${p.box} ${h(p.unit)} — ${rubs(r2(p.price * p.box))} за коробку` : ''}</p>
+${p.descr ? `<p>${h(p.descr)}</p>` : ''}
+<p><button class="btn" data-add="1">В корзину</button>${p.box ? `<button class="btn out" data-add="${p.box}">+ коробка ${p.box} ${h(p.unit)}</button>` : ''}</p>
+<p class="muted">Цены в рублях, без НДС (УСН). Оплата картой, по СБП или по счёту для организаций. Самовывоз в Ставрополе или доставка транспортной компанией — <a href="/rekvizity#dostavka">условия</a>.</p></div></div></div>
+${same.length ? `<div class="card"><h2>Ещё в разделе «${h(p.cat)}»</h2><div class="same">${same.map(x => `<a href="${productUrl(x)}">${h(x.name)}<br><b>${rubs(x.price)}</b></a>`).join('')}</div></div>` : ''}
+<script>document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>{let c={};try{c=JSON.parse(localStorage.getItem('cart'))||{}}catch(e){}
+c[${p.id}]=(c[${p.id}]||0)+Number(b.dataset.add);try{localStorage.setItem('cart',JSON.stringify(c))}catch(e){}location.href='/?cart=1#catalog'})</script>
+` + pageEnd();
+}
+function robotsTxt() {
+  return `User-agent: *\nDisallow: /admin\nDisallow: /api/\nDisallow: /doc/\nDisallow: /*?pay=\nDisallow: /*?reset=\nClean-param: source&cart /\n\nSitemap: ${SITE_URL}/sitemap.xml\n`;
+}
+function sitemapXml() {
+  const urls = [['/', '1.0'], ['/rekvizity', '0.3'], ['/privacy', '0.2'], ['/soglasie', '0.2'], ...activeProducts().map(p => [productUrl(p), '0.8'])];
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([u, pr]) => `<url><loc>${SITE_URL}${u}</loc><priority>${pr}</priority></url>`).join('\n')}\n</urlset>\n`;
+}
+function sendHtml(res, html, code = 200) { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); res.end(html); }
 function serveStatic(req, res, urlPath) {
   let p = decodeURIComponent(urlPath);
-  if (p === '/admin' || p === '/admin/') return serveAdminPage(res);
-  if (p === '/rekvizity' || p === '/rekvizity/' || p === '/oferta') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(renderInfo()); }
+  if (p === '/admin' || p === '/admin/') return serveIndex(res, true);
+  if (p === '/' || p === '/index.html') return serveIndex(res, false);
+  if (p === '/robots.txt') return send(res, 200, robotsTxt(), 'text/plain; charset=utf-8');
+  if (p === '/sitemap.xml') return send(res, 200, sitemapXml(), 'application/xml; charset=utf-8');
+  const tm = p.match(/^\/tovar\/([^/]+)\/?$/);
+  if (tm) { const pr = activeProducts().find(x => slug(x.sku) === tm[1].toLowerCase()); return pr ? sendHtml(res, renderProduct(pr)) : sendHtml(res, pageShell('Товар не найден', 'Товар не найден', '/') + '<div class="card"><h1>Товар не найден</h1><p>Возможно, его убрали из каталога. <a href="/#catalog">Перейти в каталог</a></p></div>' + pageEnd(), 404); }
+  const page = { '/rekvizity': renderInfo, '/oferta': renderInfo, '/privacy': renderPrivacy, '/soglasie': renderConsent }[p.replace(/\/$/, '') || '/'];
+  if (page) return sendHtml(res, page());
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, 'Not found', 'text/plain');
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'Not found', 'text/plain; charset=utf-8');
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': p.startsWith('/fonts/') ? 'public, max-age=2592000' : 'no-cache', 'X-Content-Type-Options': 'nosniff' });
     res.end(data);
   });
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://local');
+  // защита от встраивания сайта в чужие страницы (кликджекинг) и утечки адресов страниц на сторонние сайты
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  let url; try { url = new URL(req.url, 'http://local'); } catch { return send(res, 400, 'Bad request', 'text/plain'); }
   const key = `${req.method} ${url.pathname}`;
   try {
     const dm = url.pathname.match(/^\/doc\/(invoice|waybill)\/(\d+)$/);
@@ -1040,7 +1262,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST') {
       // защита от отправки форм с чужих сайтов
       const origin = req.headers.origin;
-      if (origin && key !== 'POST /api/yookassa/webhook' && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
+      let host = null; try { host = origin ? new URL(origin).host : null; } catch {}
+      if (origin && key !== 'POST /api/yookassa/webhook' && host !== req.headers.host) return send(res, 403, { error: 'Запрос отклонён.' });
     }
     const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/admin/products/photo' || key === 'POST /api/admin/statement' ? 12 * 1024 * 1024 : 256 * 1024) : {};
     send(res, 200, await handler(body, req, res, url));
